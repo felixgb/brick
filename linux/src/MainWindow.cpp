@@ -1,0 +1,691 @@
+#include "MainWindow.h"
+
+#include <QAction>
+#include <QCloseEvent>
+#include <QDateTime>
+#include <QHBoxLayout>
+#include <QHeaderView>
+#include <QIcon>
+#include <QItemSelectionModel>
+#include <QJsonArray>
+#include <QLabel>
+#include <QLineEdit>
+#include <QLocale>
+#include <QMenu>
+#include <QMenuBar>
+#include <QMessageBox>
+#include <QPushButton>
+#include <QScrollBar>
+#include <QSettings>
+#include <QSplitter>
+#include <QStatusBar>
+#include <QTimer>
+#include <QToolBar>
+#include <QTreeView>
+#include <QTreeWidget>
+#include <QVBoxLayout>
+
+#include "AccountDialog.h"
+#include "Core.h"
+#include "MessageModel.h"
+#include "MessageView.h"
+
+namespace {
+
+enum { FolderIdRole = Qt::UserRole, AccountIdRole, FolderRoleRole };
+
+qint64 jsonId(const QJsonValue &v) {
+    return qint64(v.toDouble());
+}
+
+QString sender(const QJsonObject &m) {
+    const QString name = m.value("from_name").toString();
+    const QString addr = m.value("from_addr").toString();
+    return name.isEmpty() ? addr : QStringLiteral("%1 <%2>").arg(name, addr);
+}
+
+QString withPrefix(const QString &prefix, const QString &subject) {
+    return subject.startsWith(prefix, Qt::CaseInsensitive) ? subject : prefix + QLatin1Char(' ') + subject;
+}
+
+QString quoted(const QString &text) {
+    QStringList lines = text.split(QLatin1Char('\n'));
+    for (QString &line : lines)
+        line = line.startsWith(QLatin1Char('>')) ? QLatin1Char('>') + line : QStringLiteral("> ") + line;
+    return lines.join(QLatin1Char('\n'));
+}
+
+QIcon themed(const char *name) {
+    return QIcon::fromTheme(QString::fromLatin1(name));
+}
+
+} // namespace
+
+MainWindow::MainWindow(Core *core, QWidget *parent) : QMainWindow(parent), m_core(core) {
+    setWindowTitle(QStringLiteral("Brick"));
+    m_model = new MessageModel(core, this);
+
+    // Sync can report many changes in a burst; redraw the list once per burst.
+    m_refreshTimer = new QTimer(this);
+    m_refreshTimer->setSingleShot(true);
+    m_refreshTimer->setInterval(60);
+    connect(m_refreshTimer, &QTimer::timeout, this, &MainWindow::refreshMessages);
+
+    buildActions();
+    buildUi();
+    connect(m_core, &Core::event, this, &MainWindow::onEvent);
+
+    QSettings settings;
+    restoreGeometry(settings.value("window/geometry").toByteArray());
+    restoreState(settings.value("window/state").toByteArray());
+    if (auto *split = findChild<QSplitter *>("mainSplit"))
+        split->restoreState(settings.value("window/mainSplit").toByteArray());
+    if (auto *split = findChild<QSplitter *>("readSplit"))
+        split->restoreState(settings.value("window/readSplit").toByteArray());
+
+    reloadFolders();
+    updateActions();
+    if (m_core->call("accounts.list").toArray().isEmpty())
+        QTimer::singleShot(0, this, &MainWindow::addAccount);
+}
+
+void MainWindow::closeEvent(QCloseEvent *event) {
+    QSettings settings;
+    settings.setValue("window/geometry", saveGeometry());
+    settings.setValue("window/state", saveState());
+    if (auto *split = findChild<QSplitter *>("mainSplit"))
+        settings.setValue("window/mainSplit", split->saveState());
+    if (auto *split = findChild<QSplitter *>("readSplit"))
+        settings.setValue("window/readSplit", split->saveState());
+    QMainWindow::closeEvent(event);
+}
+
+void MainWindow::buildActions() {
+    m_newAct = new QAction(themed("mail-message-new"), tr("New"), this);
+    m_newAct->setShortcut(QKeySequence::New);
+    connect(m_newAct, &QAction::triggered, this, [this] {
+        ComposeWindow::Draft d;
+        d.accountId = currentAccountId();
+        compose(d);
+    });
+
+    m_replyAct = new QAction(themed("mail-reply-sender"), tr("Reply"), this);
+    m_replyAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_R));
+    connect(m_replyAct, &QAction::triggered, this, [this] { reply(ReplyKind::Reply); });
+
+    m_replyAllAct = new QAction(themed("mail-reply-all"), tr("Reply all"), this);
+    m_replyAllAct->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_R));
+    connect(m_replyAllAct, &QAction::triggered, this, [this] { reply(ReplyKind::ReplyAll); });
+
+    m_forwardAct = new QAction(themed("mail-forward"), tr("Forward"), this);
+    m_forwardAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_L));
+    connect(m_forwardAct, &QAction::triggered, this, [this] { reply(ReplyKind::Forward); });
+
+    m_archiveAct = new QAction(themed("mail-archive"), tr("Archive"), this);
+    m_archiveAct->setShortcut(QKeySequence(Qt::Key_A));
+    connect(m_archiveAct, &QAction::triggered, this, [this] { moveSelected(QStringLiteral("archive")); });
+
+    m_deleteAct = new QAction(themed("edit-delete"), tr("Delete"), this);
+    m_deleteAct->setShortcut(QKeySequence::Delete);
+    connect(m_deleteAct, &QAction::triggered, this, [this] { moveSelected(QStringLiteral("trash")); });
+
+    m_readAct = new QAction(themed("mail-mark-unread"), tr("Mark unread"), this);
+    m_readAct->setShortcut(QKeySequence(Qt::Key_M));
+    connect(m_readAct, &QAction::triggered, this, [this] {
+        const bool makeRead = !currentMessage().value("seen").toBool();
+        setSelectedFlags({{"seen", makeRead}});
+    });
+
+    m_starAct = new QAction(themed("starred"), tr("Star"), this);
+    m_starAct->setShortcut(QKeySequence(Qt::Key_S));
+    connect(m_starAct, &QAction::triggered, this, [this] {
+        const bool makeStarred = !currentMessage().value("flagged").toBool();
+        setSelectedFlags({{"flagged", makeStarred}});
+    });
+
+    m_syncAct = new QAction(themed("view-refresh"), tr("Check mail"), this);
+    m_syncAct->setShortcut(QKeySequence::Refresh);
+    connect(m_syncAct, &QAction::triggered, this, [this] { m_core->call("sync.now"); });
+}
+
+void MainWindow::buildUi() {
+    // Menus
+    QMenu *file = menuBar()->addMenu(tr("&File"));
+    file->addAction(m_newAct);
+    file->addAction(m_syncAct);
+    file->addSeparator();
+    file->addAction(tr("Add account…"), this, &MainWindow::addAccount);
+    file->addAction(tr("Remove account…"), this, &MainWindow::removeAccount);
+    file->addSeparator();
+    QAction *quit = file->addAction(tr("Quit"), this, &QWidget::close);
+    quit->setShortcut(QKeySequence::Quit);
+
+    QMenu *message = menuBar()->addMenu(tr("&Message"));
+    message->addActions({m_replyAct, m_replyAllAct, m_forwardAct});
+    message->addSeparator();
+    message->addActions({m_archiveAct, m_deleteAct});
+    message->addSeparator();
+    message->addActions({m_readAct, m_starAct});
+
+    // Toolbar
+    QToolBar *bar = addToolBar(tr("Main"));
+    bar->setObjectName("mainToolBar");
+    bar->setMovable(false);
+    bar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    bar->addAction(m_newAct);
+    bar->addAction(m_syncAct);
+    bar->addSeparator();
+    bar->addActions({m_replyAct, m_replyAllAct, m_forwardAct});
+    bar->addSeparator();
+    bar->addActions({m_archiveAct, m_deleteAct});
+
+    auto *spacer = new QWidget;
+    spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    bar->addWidget(spacer);
+    m_search = new QLineEdit;
+    m_search->setPlaceholderText(tr("Search all mail"));
+    m_search->setClearButtonEnabled(true);
+    m_search->setMaximumWidth(280);
+    bar->addWidget(m_search);
+    auto *focusSearch = new QAction(this);
+    focusSearch->setShortcut(QKeySequence::Find);
+    connect(focusSearch, &QAction::triggered, m_search, qOverload<>(&QWidget::setFocus));
+    addAction(focusSearch);
+
+    // Search as you type, but not on every keystroke.
+    auto *searchDelay = new QTimer(this);
+    searchDelay->setSingleShot(true);
+    searchDelay->setInterval(150);
+    connect(m_search, &QLineEdit::textChanged, searchDelay, qOverload<>(&QTimer::start));
+    connect(searchDelay, &QTimer::timeout, this, &MainWindow::runSearch);
+
+    // Folder tree
+    m_folders = new QTreeWidget;
+    m_folders->setHeaderHidden(true);
+    m_folders->setRootIsDecorated(true);
+    m_folders->setIndentation(14);
+    m_folders->setMinimumWidth(160);
+    connect(m_folders, &QTreeWidget::itemSelectionChanged, this, &MainWindow::folderSelected);
+
+    // Message list
+    m_list = new QTreeView;
+    m_list->setModel(m_model);
+    m_list->setRootIsDecorated(false);
+    m_list->setUniformRowHeights(true); // lets the view skip measuring every row
+    m_list->setAlternatingRowColors(true);
+    m_list->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    m_list->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_list->setAllColumnsShowFocus(true);
+    m_list->setTextElideMode(Qt::ElideRight);
+    QHeaderView *header = m_list->header();
+    header->setStretchLastSection(false);
+    header->setSectionResizeMode(MessageModel::Star, QHeaderView::Fixed);
+    header->setSectionResizeMode(MessageModel::From, QHeaderView::Interactive);
+    header->setSectionResizeMode(MessageModel::Subject, QHeaderView::Stretch);
+    header->setSectionResizeMode(MessageModel::Date, QHeaderView::Fixed);
+    header->resizeSection(MessageModel::Star, 28);
+    header->resizeSection(MessageModel::From, 200);
+    header->resizeSection(MessageModel::Date, 96);
+    connect(m_list->selectionModel(), &QItemSelectionModel::selectionChanged, this, &MainWindow::messageSelected);
+    m_list->addActions({m_replyAct, m_replyAllAct, m_forwardAct, m_archiveAct, m_deleteAct, m_readAct, m_starAct});
+    m_list->setContextMenuPolicy(Qt::ActionsContextMenu);
+
+    // Reader
+    m_subject = new QLabel;
+    QFont big = m_subject->font();
+    big.setPointSizeF(big.pointSizeF() * 1.25);
+    big.setBold(true);
+    m_subject->setFont(big);
+    m_subject->setWordWrap(true);
+    m_subject->setTextFormat(Qt::PlainText);
+    m_subject->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_meta = new QLabel;
+    m_meta->setWordWrap(true);
+    m_meta->setTextFormat(Qt::PlainText);
+    m_meta->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
+    m_remoteBar = new QWidget;
+    auto *remoteLayout = new QHBoxLayout(m_remoteBar);
+    remoteLayout->setContentsMargins(0, 0, 0, 0);
+    remoteLayout->addWidget(new QLabel(tr("Remote images are hidden to protect your privacy.")), 1);
+    auto *showImages = new QPushButton(tr("Show images"));
+    remoteLayout->addWidget(showImages);
+    connect(showImages, &QPushButton::clicked, this, [this] {
+        if (m_shownId != 0)
+            showMessage(m_shownId, true);
+    });
+
+    m_view = new MessageView;
+    m_placeholder = new QLabel(tr("Select a message to read it"));
+    m_placeholder->setAlignment(Qt::AlignCenter);
+    m_placeholder->setEnabled(false);
+
+    auto *headerBox = new QWidget;
+    auto *headerLayout = new QVBoxLayout(headerBox);
+    headerLayout->setContentsMargins(12, 10, 12, 8);
+    headerLayout->setSpacing(4);
+    headerLayout->addWidget(m_subject);
+    headerLayout->addWidget(m_meta);
+    headerLayout->addWidget(m_remoteBar);
+
+    m_reader = new QWidget;
+    auto *readerLayout = new QVBoxLayout(m_reader);
+    readerLayout->setContentsMargins(0, 0, 0, 0);
+    readerLayout->setSpacing(0);
+    readerLayout->addWidget(headerBox);
+    readerLayout->addWidget(m_view, 1);
+    readerLayout->addWidget(m_placeholder, 1);
+
+    auto *readSplit = new QSplitter(Qt::Vertical);
+    readSplit->setObjectName("readSplit");
+    readSplit->addWidget(m_list);
+    readSplit->addWidget(m_reader);
+    readSplit->setStretchFactor(0, 2);
+    readSplit->setStretchFactor(1, 3);
+
+    auto *mainSplit = new QSplitter(Qt::Horizontal);
+    mainSplit->setObjectName("mainSplit");
+    mainSplit->addWidget(m_folders);
+    mainSplit->addWidget(readSplit);
+    mainSplit->setStretchFactor(0, 0);
+    mainSplit->setStretchFactor(1, 1);
+    mainSplit->setSizes({220, 900});
+    setCentralWidget(mainSplit);
+
+    m_statusLabel = new QLabel;
+    statusBar()->addWidget(m_statusLabel, 1);
+    resize(1180, 760);
+    clearReader();
+}
+
+// ---- folders ---------------------------------------------------------------
+
+void MainWindow::reloadFolders() {
+    const qint64 selected = m_model->isSearch() ? 0 : m_model->folderId();
+    QSignalBlocker block(m_folders);
+    m_folders->clear();
+
+    QTreeWidgetItem *toSelect = nullptr;
+    QTreeWidgetItem *firstInbox = nullptr;
+    const QJsonArray accounts = m_core->call("accounts.list").toArray();
+    for (const QJsonValue &av : accounts) {
+        const QJsonObject account = av.toObject();
+        const qint64 accountId = jsonId(account.value("id"));
+        auto *top = new QTreeWidgetItem(m_folders, {account.value("email").toString()});
+        top->setData(0, AccountIdRole, accountId);
+        top->setFlags(Qt::ItemIsEnabled);
+        QFont f = top->font(0);
+        f.setBold(true);
+        top->setFont(0, f);
+
+        const QJsonArray folders = m_core->call("folders.list", {{"account_id", accountId}}).toArray();
+        for (const QJsonValue &fv : folders) {
+            const QJsonObject folder = fv.toObject();
+            if (!folder.value("selectable").toBool())
+                continue;
+            const int unread = folder.value("unread").toInt();
+            QString label = folder.value("name").toString();
+            if (unread > 0)
+                label += QStringLiteral(" (%1)").arg(unread);
+            auto *item = new QTreeWidgetItem(top, {label});
+            item->setData(0, FolderIdRole, jsonId(folder.value("id")));
+            item->setData(0, AccountIdRole, accountId);
+            item->setData(0, FolderRoleRole, folder.value("role").toString());
+            item->setToolTip(0, folder.value("path").toString());
+            if (unread > 0) {
+                QFont bf = item->font(0);
+                bf.setBold(true);
+                item->setFont(0, bf);
+            }
+            if (jsonId(folder.value("id")) == selected)
+                toSelect = item;
+            if (!firstInbox && folder.value("role").toString() == QLatin1String("inbox"))
+                firstInbox = item;
+        }
+        top->setExpanded(true);
+    }
+
+    if (toSelect) {
+        m_folders->setCurrentItem(toSelect);
+    } else if (!m_model->isSearch() && firstInbox) {
+        // Nothing open yet (first run, or the open folder went away).
+        block.unblock();
+        m_folders->setCurrentItem(firstInbox);
+    }
+}
+
+void MainWindow::folderSelected() {
+    QTreeWidgetItem *item = m_folders->currentItem();
+    if (!item || !item->data(0, FolderIdRole).isValid())
+        return;
+    if (!m_search->text().isEmpty()) {
+        QSignalBlocker block(m_search);
+        m_search->clear();
+    }
+    m_model->showFolder(item->data(0, FolderIdRole).toLongLong());
+    clearReader();
+    updateActions();
+}
+
+qint64 MainWindow::currentAccountId() const {
+    const QJsonObject m = currentMessage();
+    if (!m.isEmpty())
+        return jsonId(m.value("account_id"));
+    if (QTreeWidgetItem *item = m_folders->currentItem())
+        return item->data(0, AccountIdRole).toLongLong();
+    return 0;
+}
+
+// ---- messages --------------------------------------------------------------
+
+void MainWindow::runSearch() {
+    const QString query = m_search->text().trimmed();
+    if (query.isEmpty()) {
+        folderSelected();
+        return;
+    }
+    m_model->showSearch(query);
+    clearReader();
+    updateActions();
+}
+
+QList<qint64> MainWindow::selectedIds() const {
+    QList<qint64> ids;
+    const QModelIndexList rows = m_list->selectionModel()->selectedRows();
+    for (const QModelIndex &index : rows)
+        ids.append(jsonId(m_model->message(index.row()).value("id")));
+    return ids;
+}
+
+QJsonObject MainWindow::currentMessage() const {
+    const QModelIndexList rows = m_list->selectionModel()->selectedRows();
+    return rows.size() == 1 ? m_model->message(rows.first().row()) : QJsonObject();
+}
+
+void MainWindow::refreshMessages() {
+    // Rows shift when mail arrives or leaves; re-find the selection by id.
+    const QList<qint64> ids = selectedIds();
+    const int scroll = m_list->verticalScrollBar()->value();
+    {
+        QSignalBlocker block(m_list->selectionModel());
+        m_model->refresh();
+        bool first = true;
+        for (qint64 id : ids) {
+            const int row = m_model->rowOfMessage(id);
+            if (row < 0)
+                continue;
+            const QModelIndex index = m_model->index(row, 0);
+            m_list->selectionModel()->select(index, QItemSelectionModel::Select | QItemSelectionModel::Rows);
+            if (first)
+                m_list->selectionModel()->setCurrentIndex(index, QItemSelectionModel::NoUpdate);
+            first = false;
+        }
+    }
+    m_list->verticalScrollBar()->setValue(scroll);
+    if (m_shownId != 0 && m_model->rowOfMessage(m_shownId) < 0 && selectedIds().isEmpty())
+        clearReader();
+    updateActions();
+}
+
+void MainWindow::messageSelected() {
+    updateActions();
+    const QJsonObject m = currentMessage();
+    if (m.isEmpty()) {
+        if (selectedIds().isEmpty())
+            clearReader();
+        return;
+    }
+    const qint64 id = jsonId(m.value("id"));
+    if (id == m_shownId)
+        return;
+    showMessage(id, false);
+    if (!m.value("seen").toBool())
+        m_core->call("messages.set_flags", {{"ids", QJsonArray{id}}, {"seen", true}});
+}
+
+void MainWindow::showMessage(qint64 id, bool allowRemote) {
+    QString error;
+    const QJsonObject r = m_core->call("messages.get", {{"id", id}, {"allow_remote", allowRemote}}, &error).toObject();
+    if (!error.isEmpty()) {
+        clearReader();
+        return;
+    }
+    const QJsonObject m = r.value("message").toObject();
+    m_shownId = id;
+    m_shownAllowRemote = allowRemote;
+    m_shownCc = r.value("cc").toString();
+
+    const QString subject = m.value("subject").toString();
+    m_subject->setText(subject.isEmpty() ? tr("(no subject)") : subject);
+    const QDateTime when = QDateTime::fromSecsSinceEpoch(qint64(m.value("date").toDouble()));
+    QString meta = tr("From: %1\nTo: %2").arg(sender(m), m.value("to").toString());
+    if (!m_shownCc.isEmpty())
+        meta += tr("\nCc: %1").arg(m_shownCc);
+    meta += QLatin1Char('\n') + QLocale().toString(when, QLocale::LongFormat);
+
+    m_subject->show();
+    m_meta->show();
+    m_placeholder->hide();
+    m_view->show();
+
+    if (r.value("body").isNull()) {
+        // Not downloaded yet: the engine is fetching it and will send body_ready.
+        m_pendingBodyId = id;
+        m_shownText.clear();
+        m_remoteBar->hide();
+        m_meta->setText(meta);
+        m_view->showHtml(QStringLiteral("<body style=\"font:14px sans-serif;color:#777;margin:16px\">%1</body>")
+                             .arg(tr("Loading…")),
+                         false);
+        return;
+    }
+    m_pendingBodyId = 0;
+    const QJsonObject body = r.value("body").toObject();
+    m_shownText = body.value("text").toString();
+
+    const QJsonArray attachments = body.value("attachments").toArray();
+    if (!attachments.isEmpty()) {
+        QStringList names;
+        for (const QJsonValue &a : attachments)
+            names << a.toObject().value("name").toString();
+        meta += tr("\nAttachments: %1").arg(names.join(QStringLiteral(", ")));
+    }
+    m_meta->setText(meta);
+    m_remoteBar->setVisible(body.value("blocked_remote").toBool());
+    m_view->showHtml(body.value("html").toString(), allowRemote);
+}
+
+void MainWindow::clearReader() {
+    m_shownId = 0;
+    m_pendingBodyId = 0;
+    m_shownText.clear();
+    m_shownCc.clear();
+    m_subject->hide();
+    m_meta->hide();
+    m_remoteBar->hide();
+    m_view->clear();
+    m_view->hide();
+    m_placeholder->show();
+}
+
+void MainWindow::updateActions() {
+    const QList<qint64> ids = selectedIds();
+    const QJsonObject m = currentMessage();
+    const bool one = !m.isEmpty();
+    const bool any = !ids.isEmpty();
+    m_replyAct->setEnabled(one);
+    m_replyAllAct->setEnabled(one);
+    m_forwardAct->setEnabled(one);
+    m_archiveAct->setEnabled(any);
+    m_deleteAct->setEnabled(any);
+    m_readAct->setEnabled(any);
+    m_starAct->setEnabled(any);
+    m_readAct->setText(one && !m.value("seen").toBool() ? tr("Mark read") : tr("Mark unread"));
+    m_starAct->setText(one && m.value("flagged").toBool() ? tr("Remove star") : tr("Star"));
+    m_newAct->setEnabled(!m_core->call("accounts.list").toArray().isEmpty());
+
+    QString status;
+    if (m_syncing > 0)
+        status = tr("Checking mail…");
+    else if (m_model->isSearch())
+        status = tr("%n result(s)", nullptr, m_model->rowCount());
+    else
+        status = tr("%n message(s)", nullptr, m_model->rowCount());
+    m_statusLabel->setText(status);
+}
+
+void MainWindow::setSelectedFlags(const QJsonObject &flags) {
+    QJsonArray ids;
+    for (qint64 id : selectedIds())
+        ids.append(id);
+    if (ids.isEmpty())
+        return;
+    QJsonObject params = flags;
+    params.insert("ids", ids);
+    m_core->call("messages.set_flags", params);
+}
+
+void MainWindow::moveSelected(const QString &to) {
+    const QModelIndexList rows = m_list->selectionModel()->selectedRows();
+    if (rows.isEmpty())
+        return;
+    QJsonArray ids;
+    int lowest = rows.first().row();
+    for (const QModelIndex &index : rows) {
+        ids.append(jsonId(m_model->message(index.row()).value("id")));
+        lowest = qMin(lowest, index.row());
+    }
+    QString error;
+    m_core->call("messages.move", {{"ids", ids}, {"to", to}}, &error);
+    if (!error.isEmpty()) {
+        statusBar()->showMessage(error, 6000);
+        return;
+    }
+    // The engine has already removed the rows locally. Redraw now and move the
+    // selection to whatever slid into place, so triage is one key per message.
+    m_refreshTimer->stop();
+    const int scroll = m_list->verticalScrollBar()->value();
+    clearReader();
+    m_model->refresh();
+    m_list->verticalScrollBar()->setValue(scroll);
+    if (m_model->rowCount() > 0) {
+        const int row = qMin(lowest, m_model->rowCount() - 1);
+        m_list->setCurrentIndex(m_model->index(row, 0));
+    }
+    updateActions();
+}
+
+// ---- composing -------------------------------------------------------------
+
+void MainWindow::compose(const ComposeWindow::Draft &draft) {
+    auto *window = new ComposeWindow(m_core, draft);
+    window->show();
+}
+
+void MainWindow::reply(ReplyKind kind) {
+    const QJsonObject m = currentMessage();
+    if (m.isEmpty())
+        return;
+    const QString subject = m.value("subject").toString();
+    const QDateTime when = QDateTime::fromSecsSinceEpoch(qint64(m.value("date").toDouble()));
+    const QString date = QLocale().toString(when, QLocale::LongFormat);
+
+    ComposeWindow::Draft d;
+    d.accountId = jsonId(m.value("account_id"));
+
+    if (kind == ReplyKind::Forward) {
+        d.subject = withPrefix(QStringLiteral("Fwd:"), subject);
+        d.text = QStringLiteral("\n\n-------- Forwarded message --------\nFrom: %1\nDate: %2\nSubject: %3\nTo: %4\n\n%5")
+                     .arg(sender(m), date, subject, m.value("to").toString(), m_shownText);
+        compose(d);
+        return;
+    }
+
+    d.replyToId = jsonId(m.value("id"));
+    d.to = sender(m);
+    d.subject = withPrefix(QStringLiteral("Re:"), subject);
+    d.text = QStringLiteral("\n\nOn %1, %2 wrote:\n%3").arg(date, sender(m), quoted(m_shownText));
+
+    if (kind == ReplyKind::ReplyAll) {
+        // Everyone on To and Cc except ourselves.
+        QString mine;
+        const QJsonArray accounts = m_core->call("accounts.list").toArray();
+        for (const QJsonValue &a : accounts) {
+            if (jsonId(a.toObject().value("id")) == d.accountId)
+                mine = a.toObject().value("email").toString();
+        }
+        QStringList others;
+        const QString all = m.value("to").toString() + QLatin1Char(',') + m_shownCc;
+        for (const QString &part : all.split(QLatin1Char(','), Qt::SkipEmptyParts)) {
+            const QString addr = part.trimmed();
+            if (!addr.isEmpty() && !addr.contains(mine, Qt::CaseInsensitive))
+                others << addr;
+        }
+        d.cc = others.join(QStringLiteral(", "));
+    }
+    compose(d);
+}
+
+// ---- accounts --------------------------------------------------------------
+
+void MainWindow::addAccount() {
+    AccountDialog dialog(m_core, this);
+    dialog.exec();
+}
+
+void MainWindow::removeAccount() {
+    const qint64 accountId = currentAccountId();
+    if (accountId == 0)
+        return;
+    QString email;
+    const QJsonArray accounts = m_core->call("accounts.list").toArray();
+    for (const QJsonValue &a : accounts) {
+        if (jsonId(a.toObject().value("id")) == accountId)
+            email = a.toObject().value("email").toString();
+    }
+    const auto answer = QMessageBox::question(
+        this, tr("Remove account"),
+        tr("Remove %1 from Brick?\n\nMail stays on the server; only the local copy and saved sign-in are deleted.")
+            .arg(email),
+        QMessageBox::Cancel | QMessageBox::Yes, QMessageBox::Cancel);
+    if (answer != QMessageBox::Yes)
+        return;
+    m_model->showFolder(0);
+    clearReader();
+    m_core->call("accounts.remove", {{"id", accountId}});
+}
+
+// ---- engine events ---------------------------------------------------------
+
+void MainWindow::onEvent(const QJsonObject &event) {
+    const QString type = event.value("type").toString();
+
+    if (type == QLatin1String("messages_changed")) {
+        if (m_model->isSearch() || jsonId(event.value("folder_id")) == m_model->folderId())
+            m_refreshTimer->start();
+    } else if (type == QLatin1String("folders_changed") || type == QLatin1String("accounts_changed")) {
+        reloadFolders();
+        updateActions();
+    } else if (type == QLatin1String("body_ready")) {
+        if (jsonId(event.value("id")) == m_pendingBodyId)
+            showMessage(m_pendingBodyId, m_shownAllowRemote);
+        if (jsonId(event.value("folder_id")) == m_model->folderId())
+            m_refreshTimer->start(); // the row gained its preview text
+    } else if (type == QLatin1String("body_error")) {
+        if (jsonId(event.value("id")) == m_pendingBodyId) {
+            m_pendingBodyId = 0;
+            m_view->showHtml(QStringLiteral("<body style=\"font:14px sans-serif;color:#777;margin:16px\">%1</body>")
+                                 .arg(tr("This message couldn't be downloaded. %1")
+                                          .arg(event.value("message").toString().toHtmlEscaped())),
+                             false);
+        }
+    } else if (type == QLatin1String("sync_started")) {
+        ++m_syncing;
+        updateActions();
+    } else if (type == QLatin1String("sync_finished")) {
+        m_syncing = qMax(0, m_syncing - 1);
+        updateActions();
+    } else if (type == QLatin1String("error")) {
+        statusBar()->showMessage(event.value("message").toString(), 8000);
+    }
+}

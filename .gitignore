@@ -1,0 +1,6 @@
+/target
+/linux/build
+/macos/.build
+/macos/Brick.app
+*.swp
+.DS_Store

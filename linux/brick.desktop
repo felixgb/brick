@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Brick
+GenericName=Mail Client
+Comment=Read and send email
+Exec=brick
+Icon=mail-client
+Categories=Network;Email;Qt;
+StartupWMClass=brick
