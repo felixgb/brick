@@ -4,9 +4,11 @@
 //! (JSON in, JSON out, never blocks on the network) and receive JSON events
 //! through a callback. The C ABI in [`ffi`] is a thin wrapper over that.
 
+pub mod claude;
 pub mod engine;
 pub mod ffi;
 pub mod imap;
+pub mod items;
 pub mod mime;
 pub mod model;
 pub mod oauth;

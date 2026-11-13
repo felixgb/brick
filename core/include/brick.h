@@ -34,16 +34,33 @@
  *                                                    -> then send_done | send_error (with token)
  *   sync.now
  *
+ *   To-do and calendar items (one kind of thing; an item with no date is
+ *   only a to-do). Dates are "YYYY-MM-DD" and times "HH:MM", local time.
+ *   items.list                                       -> [item]
+ *   items.save          {item}                       -> item   (id 0 or absent creates)
+ *   items.set_done      {id, done}
+ *   items.delete        {id}
+ *   items.for_message   {id}                         -> [item] made from that email
+ *   items.source        {id}                         -> {message_id, folder_id} | null
+ *   items.extract       {id, token}                  -> then items_extracted | items_extract_error
+ *                                                       Sends the email to Claude. Nothing is saved;
+ *                                                       save the proposals you keep with items.save.
+ *   claude.status                                    -> {configured, model, default_model}
+ *   claude.set_key      {key}                        (empty removes it; stored in the keychain)
+ *
  * Events (field "type")
  *   accounts_changed, account_added {account_id}, account_error {message},
  *   folders_changed {account_id}, messages_changed {account_id, folder_id},
  *   body_ready {id}, body_error {id, message},
  *   sync_started {account_id}, sync_finished {account_id, ok},
  *   send_done {token}, send_error {token, message},
+ *   items_changed,
+ *   items_extracted {token, message_id, items, summary, truncated},
+ *   items_extract_error {token, message_id, message},
  *   error {account_id, message}
  *
  * Settings keys for OAuth: google_client_id, google_client_secret,
- * microsoft_client_id.
+ * microsoft_client_id. Claude model: claude_model.
  */
 #ifndef BRICK_H
 #define BRICK_H

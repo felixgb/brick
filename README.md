@@ -1,6 +1,6 @@
 # Brick
 
-A desktop mail client with one Rust engine and two native front ends.
+A desktop mail client with a built-in to-do list and calendar, on one Rust engine with two native front ends.
 
 ```
 core/    Rust engine: local SQLite store, IMAP sync, SMTP, OAuth, HTML sanitising
@@ -20,12 +20,13 @@ background and reports back as an event.
 |---|---|
 | Engine | Builds. Unit tests pass, and an end-to-end test passes against a real IMAP/SMTP server. |
 | C interface | Builds and runs from a C program. |
-| Linux Qt app | Written, **never compiled**: Qt 6 is not installed on the machine it was written on. |
-| macOS app | Written, **never compiled**: it was written on Linux. |
+| Linux Qt app | Mail only. Written, **never compiled**: Qt 6 is not installed on the machine it was written on. |
+| macOS app | Mail builds and runs. The To-do and Calendar tabs and the Claude button are written but **not yet compiled**. |
+| Claude extraction | Tested against a stand-in server only; no request has been sent to the real API. |
 | Keychain storage | Compiles; not exercised (tests use the in-memory store). |
 | Gmail and Outlook sign-in | The OAuth flow is tested against a stand-in server, not against Google or Microsoft. |
 
-Expect compile errors in both front ends on first build.
+Expect compile errors in anything marked as not yet compiled.
 
 ## What works in the engine
 
@@ -40,7 +41,34 @@ Expect compile errors in both front ends on first build.
 - HTML mail is sanitised: scripts, frames and event handlers removed, remote images blocked until you allow them per message
 - Credentials live in the macOS Keychain or the Linux Secret Service, never in the database
 
+## To-do and calendar
+
+A to-do and a calendar entry are the same thing: an item. With no date it shows
+only in the To-do tab; with a day it also shows on the Calendar tab; with times
+it is a timed entry. Any item can be ticked off.
+
+- Items live in Brick's own database on each machine. They are not synced to
+  Fastmail, Google or Outlook calendars, or between machines.
+- **Add to To-do** on an open email sends it to Claude, which proposes items.
+  You review, edit and untick them before anything is saved.
+- An item made from an email keeps a link back to it, and the email shows the
+  items made from it.
+
+To use the Claude button, add an Anthropic API key under Settings → Claude. It
+is stored in the Keychain. Each click sends that one email's sender,
+recipients, subject, date and text to Anthropic's API; attachments are not
+sent, and nothing is sent at any other time. The model defaults to
+`claude-opus-5-5` and can be changed in the same place (`claude-haiku-5-5` is
+much cheaper and likely good enough for this). Requests opt in to Anthropic's
+server-side fallback, so if a safety classifier declines an email the API
+retries it on another model.
+
 ## Not done yet
+
+- Calendar week and day views; editing the end date of a multi-day item
+- Recurring items and reminders
+- Calendar sync (CalDAV, Google, Outlook)
+- To-do and calendar in the Linux app
 
 - Push (IMAP IDLE): mail is checked every two minutes and on demand
 - Conversation threading in the list

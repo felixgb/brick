@@ -1,5 +1,45 @@
 import SwiftUI
 
+/// The window's content: one of the three tabs, with the switcher in the toolbar.
+struct RootView: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        @Bindable var model = model
+
+        Group {
+            switch model.tab {
+            case .mail: MainView()
+            case .todo: TodoView()
+            case .calendar: CalendarView()
+            }
+        }
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                Picker("View", selection: $model.tab) {
+                    ForEach(AppTab.allCases) { tab in
+                        Text(tab.title).tag(tab)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .help("Switch between mail, to-do and calendar")
+            }
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if let banner = model.banner {
+                BannerView(text: banner) { model.banner = nil }
+            }
+        }
+        .sheet(item: $model.editingItem) { item in
+            ItemEditor(item: item)
+        }
+        .sheet(item: $model.extractionResult) { result in
+            ExtractionSheet(result: result)
+        }
+    }
+}
+
 struct MainView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openWindow) private var openWindow
@@ -50,11 +90,6 @@ struct MainView: View {
         }
         .navigationTitle(model.isSearching ? "Search" : (model.folder(model.selectedFolder)?.name ?? "Brick"))
         .navigationSubtitle(subtitle)
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            if let banner = model.banner {
-                BannerView(text: banner) { model.banner = nil }
-            }
-        }
         .overlay {
             if let error = model.startupError {
                 ContentUnavailableView(

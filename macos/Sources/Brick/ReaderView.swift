@@ -3,6 +3,7 @@ import WebKit
 
 struct ReaderView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         if let detail = model.detail {
@@ -68,10 +69,53 @@ struct ReaderView: View {
                 }
                 .padding(.top, 2)
             }
+            itemsBar(detail)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
+    }
+
+    /// The path from this email to the to-do list and calendar.
+    private func itemsBar(_ detail: MessageDetail) -> some View {
+        let working = model.extractingMessageId == detail.message.id
+        return HStack(spacing: 8) {
+            Button {
+                if model.claude?.configured == true {
+                    model.extractItems()
+                } else {
+                    // No API key yet: take the user to where it goes.
+                    openSettings()
+                }
+            } label: {
+                if working {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("Reading…")
+                    }
+                } else {
+                    Label("Add to To-do", systemImage: "sparkles")
+                }
+            }
+            .disabled(detail.body == nil || model.extractingMessageId != nil)
+            .help(
+                model.claude?.configured == true
+                    ? "Ask Claude to find to-dos and calendar entries in this email"
+                    : "Add an Anthropic API key in Settings to use this")
+
+            ForEach(model.linkedItems) { item in
+                Button {
+                    model.editingItem = item
+                } label: {
+                    Label(item.title, systemImage: item.done ? "checkmark.circle.fill" : "circle")
+                        .lineLimit(1)
+                }
+                .buttonStyle(.borderless)
+                .help(item.whenLabel ?? "No date")
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.top, 4)
     }
 
     private var remoteImagesBar: some View {

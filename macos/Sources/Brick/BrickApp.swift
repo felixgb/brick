@@ -6,7 +6,7 @@ struct BrickApp: App {
 
     var body: some Scene {
         WindowGroup("Brick", id: "main") {
-            MainView()
+            RootView()
                 .environment(model)
                 .frame(minWidth: 860, minHeight: 480)
         }
@@ -21,8 +21,13 @@ struct BrickApp: App {
         .defaultSize(width: 640, height: 520)
 
         Settings {
-            AccountsSettingsView()
-                .environment(model)
+            TabView {
+                AccountsSettingsView()
+                    .tabItem { Label("Accounts", systemImage: "person.crop.circle") }
+                ClaudeSettingsView()
+                    .tabItem { Label("Claude", systemImage: "sparkles") }
+            }
+            .environment(model)
         }
     }
 }
@@ -37,7 +42,20 @@ struct MailCommands: Commands {
                 .keyboardShortcut("n")
                 .disabled(model.accounts.isEmpty)
         }
+        CommandGroup(before: .toolbar) {
+            Button("Mail") { model.tab = .mail }
+                .keyboardShortcut("1")
+            Button("To-do") { model.tab = .todo }
+                .keyboardShortcut("2")
+            Button("Calendar") { model.tab = .calendar }
+                .keyboardShortcut("3")
+            Divider()
+        }
         CommandMenu("Message") {
+            Button("Add to To-do with Claude") { model.extractItems() }
+                .keyboardShortcut("t", modifiers: [.command, .shift])
+                .disabled(model.tab != .mail || model.detail?.body == nil || model.extractingMessageId != nil)
+            Divider()
             Button("Reply") { open(.reply) }
                 .keyboardShortcut("r")
                 .disabled(model.selectedRow == nil)

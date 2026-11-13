@@ -8,7 +8,8 @@ use crate::oauth::{self, ClientCreds, Tokens};
 use crate::providers::{self, OAuthEndpoints};
 use crate::secrets::{self, SecretStore};
 use crate::store::Store;
-use crate::{mime, smtp};
+use crate::items::Item;
+use crate::{claude, mime, smtp};
 use anyhow::{anyhow, bail, Result};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -399,6 +400,50 @@ impl Inner {
             }
         }
         Ok(())
+    }
+
+    /// Sends an email to Claude and returns the items it proposes, each tagged
+    /// with where it came from. Nothing is saved.
+    pub async fn extract_items(&self, message_id: i64) -> Result<claude::Extraction> {
+        let row = self.store.message(message_id)?.ok_or_else(|| anyhow!("message no longer exists"))?;
+        let key = self
+            .secret(claude::KEY_SECRET.to_string())
+            .await?
+            .filter(|k| !k.trim().is_empty())
+            .ok_or_else(|| anyhow!("Add your Anthropic API key in Settings to use this."))?;
+        let model = self
+            .store
+            .setting(claude::MODEL_SETTING)?
+            .filter(|m| !m.trim().is_empty())
+            .unwrap_or_else(|| claude::DEFAULT_MODEL.to_string());
+
+        if self.store.body(message_id)?.is_none() {
+            self.fetch_body(message_id).await?;
+        }
+        let raw = self.store.body(message_id)?.ok_or_else(|| anyhow!("the message could not be downloaded"))?;
+        let text = mime::summarise(&raw).text;
+        let from = if row.from_name.is_empty() {
+            row.from_addr.clone()
+        } else {
+            format!("{} <{}>", row.from_name, row.from_addr)
+        };
+
+        let email = claude::Email { from: &from, to: &row.to, subject: &row.subject, sent: row.date, text: &text };
+        let mut out = claude::extract(key.trim(), model.trim(), &email).await?;
+
+        let header_id = self.store.threading(message_id)?.map(|t| t.0).unwrap_or_default();
+        out.items = out
+            .items
+            .into_iter()
+            .map(|i| Item {
+                source_account_id: Some(row.account_id),
+                source_message_id: header_id.clone(),
+                source_subject: row.subject.clone(),
+                source_from: from.clone(),
+                ..i
+            })
+            .collect();
+        Ok(out)
     }
 
     /// Checks that the account's credentials are accepted by its IMAP server.

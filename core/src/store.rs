@@ -149,11 +149,18 @@ impl Store {
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.execute_batch(SCHEMA)?;
+        conn.execute_batch(crate::items::SCHEMA)?;
         Ok(Self { conn: Arc::new(Mutex::new(conn)) })
     }
 
     fn db(&self) -> MutexGuard<'_, Connection> {
         self.conn.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Runs `f` with the database connection. Used by modules that keep their
+    /// own SQL, such as `items`.
+    pub fn with_db<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
+        f(&self.db())
     }
 
     // ---- settings -------------------------------------------------------
@@ -479,6 +486,24 @@ impl Store {
             .query_row("SELECT message_id, refs, cc_text FROM messages WHERE id = ?1", [id], |r| {
                 Ok((r.get(0)?, r.get(1)?, r.get(2)?))
             })
+            .optional()?)
+    }
+
+    /// Finds a message by its Message-ID header: (id, folder id). A message
+    /// can sit in several folders; the inbox copy wins, then the newest.
+    pub fn find_by_message_id(&self, account_id: Option<i64>, message_id: &str) -> Result<Option<(i64, i64)>> {
+        if message_id.is_empty() {
+            return Ok(None);
+        }
+        Ok(self
+            .db()
+            .query_row(
+                "SELECT m.id, m.folder_id FROM messages m JOIN folders f ON f.id = m.folder_id
+                 WHERE m.message_id = ?1 AND (?2 IS NULL OR m.account_id = ?2)
+                 ORDER BY f.role = 'inbox' DESC, m.id DESC LIMIT 1",
+                params![message_id, account_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
             .optional()?)
     }
 

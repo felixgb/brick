@@ -42,6 +42,18 @@ final class AppModel {
     var allowRemote = false
     private var pendingBody: Int64?
 
+    // To-do and calendar
+    var tab: AppTab = .mail
+    var items: [Item] = []
+    var editingItem: Item?
+    /// Items already made from the email on screen.
+    var linkedItems: [Item] = []
+    var claude: ClaudeStatus?
+    /// The message Claude is reading right now, if any.
+    var extractingMessageId: Int64?
+    var extractionResult: ExtractionResult?
+    private var extractionToken = ""
+
     var syncing = 0
     var banner: String?
     var sendStates: [String: SendState] = [:]
@@ -63,6 +75,8 @@ final class AppModel {
             }
             providers = (try? core.call("providers.list")) ?? []
             reloadAccounts()
+            reloadItems()
+            refreshClaudeStatus()
         } catch {
             self.core = nil
             self.startupError = error.localizedDescription
@@ -172,6 +186,7 @@ final class AppModel {
         guard let row = selectedRow else {
             detail = nil
             pendingBody = nil
+            linkedItems = []
             return
         }
         if detail?.message.id == row.id { return }
@@ -188,6 +203,7 @@ final class AppModel {
             let loaded: MessageDetail = try core.call("messages.get", ["id": id, "allow_remote": allowRemote])
             detail = loaded
             pendingBody = loaded.body == nil ? id : nil
+            reloadLinkedItems()
         } catch {
             detail = nil
             pendingBody = nil
@@ -256,6 +272,110 @@ final class AppModel {
         } catch {
             banner = error.localizedDescription
             return false
+        }
+    }
+
+    // MARK: To-do and calendar
+
+    func reloadItems() {
+        items = (try? core?.call("items.list")) ?? []
+        reloadLinkedItems()
+    }
+
+    private func reloadLinkedItems() {
+        guard let id = detail?.message.id else {
+            linkedItems = []
+            return
+        }
+        linkedItems = (try? core?.call("items.for_message", ["id": id])) ?? []
+    }
+
+    func itemsOn(_ day: String) -> [Item] {
+        items.filter { $0.occurs(on: day) }
+    }
+
+    /// Saves a new or edited item. Returns an error message on failure.
+    @discardableResult
+    func save(_ item: Item) -> String? {
+        guard let core else { return "The mail store isn't open." }
+        do {
+            try core.send("items.save", ["item": item.payload])
+            reloadItems()
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
+    func setDone(_ item: Item, _ done: Bool) {
+        // Flip it locally first so the tick is instant.
+        if let index = items.firstIndex(where: { $0.id == item.id }) {
+            items[index].done = done
+        }
+        attempt { try core?.send("items.set_done", ["id": item.id, "done": done]) }
+    }
+
+    func delete(_ item: Item) {
+        attempt { try core?.send("items.delete", ["id": item.id]) }
+        reloadItems()
+    }
+
+    func newItem(on day: String? = nil) {
+        editingItem = Item(date: day)
+    }
+
+    /// Shows the email an item was made from.
+    func openSource(of item: Item) {
+        guard let core else { return }
+        guard let source: ItemSource = try? core.call("items.source", ["id": item.id]) else {
+            banner = "The email this came from is no longer in Brick."
+            return
+        }
+        editingItem = nil
+        tab = .mail
+        if isSearching { searchText = "" }
+        selectedFolder = source.folderId
+        loadMessages()
+        // The message may be further down than the first page.
+        var pages = 0
+        while !rows.contains(where: { $0.id == source.messageId }), rows.count < total, pages < 25 {
+            loadMore()
+            pages += 1
+        }
+        selection = [source.messageId]
+    }
+
+    // MARK: Claude
+
+    func refreshClaudeStatus() {
+        claude = try? core?.call("claude.status")
+    }
+
+    func setClaudeKey(_ key: String) {
+        attempt { try core?.send("claude.set_key", ["key": key]) }
+        refreshClaudeStatus()
+    }
+
+    func setClaudeModel(_ model: String) {
+        attempt { try core?.send("settings.set", ["key": "claude_model", "value": model]) }
+        refreshClaudeStatus()
+    }
+
+    /// Sends the open email to Claude. The proposals arrive as an event and
+    /// are shown for review; nothing is saved until the user confirms.
+    func extractItems() {
+        guard let core, let id = detail?.message.id, extractingMessageId == nil else { return }
+        extractionToken = UUID().uuidString
+        if attempt({ try core.send("items.extract", ["id": id, "token": extractionToken]) }) {
+            extractingMessageId = id
+        }
+    }
+
+    /// Saves the proposals the user kept.
+    func add(_ proposals: [Item]) {
+        let failures = proposals.compactMap { save($0) }
+        if let first = failures.first {
+            banner = failures.count == 1 ? first : "\(failures.count) items couldn't be added. \(first)"
         }
     }
 
@@ -384,6 +504,21 @@ final class AppModel {
             if case .waiting = addAccountState { addAccountState = .added }
         case "account_error":
             if case .waiting = addAccountState { addAccountState = .failed(message) }
+        case "items_changed":
+            reloadItems()
+        case "items_extracted":
+            guard event["token"] as? String == extractionToken else { break }
+            extractingMessageId = nil
+            let found: [Item] = Core.decode(event["items"]) ?? []
+            extractionResult = ExtractionResult(
+                subject: found.first?.sourceSubject ?? detail?.message.displaySubject ?? "",
+                summary: event["summary"] as? String ?? "",
+                truncated: event["truncated"] as? Bool ?? false,
+                proposals: found.map { Proposal(item: $0) })
+        case "items_extract_error":
+            guard event["token"] as? String == extractionToken else { break }
+            extractingMessageId = nil
+            banner = message
         case "error":
             banner = message
         default:

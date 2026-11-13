@@ -66,6 +66,14 @@ final class Core {
         return response["ok"] ?? NSNull()
     }
 
+    /// Decodes a value taken from an event payload.
+    static func decode<T: Decodable>(_ value: Any?, as type: T.Type = T.self) -> T? {
+        guard let value, !(value is NSNull),
+            let data = try? JSONSerialization.data(withJSONObject: value, options: [.fragmentsAllowed])
+        else { return nil }
+        return try? decoder.decode(T.self, from: data)
+    }
+
     /// Sends a request and decodes the result.
     func call<T: Decodable>(_ method: String, _ params: [String: Any] = [:]) throws -> T {
         let value = try send(method, params)

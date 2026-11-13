@@ -10,7 +10,8 @@ use crate::model::{Account, AuthKind, Security};
 use crate::secrets::{self, KeyringStore, MemoryStore, SecretStore};
 use crate::store::Store;
 use crate::sync::{self, Emit, Inner};
-use crate::{mime, oauth, providers, smtp};
+use crate::items::{self, Item};
+use crate::{claude, mime, oauth, providers, smtp};
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -135,6 +136,81 @@ impl Engine {
                         Err(e) => inner.emit(json!({ "type": "send_error", "token": token, "message": format!("{e:#}") })),
                     }
                 });
+                Value::Null
+            }
+
+            "items.list" => json!(store.with_db(items::list)?),
+            "items.save" => {
+                let item: Item = param(p, "item")?;
+                let saved = store.with_db(|db| items::save(db, item))?;
+                self.inner.emit(json!({ "type": "items_changed" }));
+                json!(saved)
+            }
+            "items.set_done" => {
+                let (id, done): (i64, bool) = (param(p, "id")?, param(p, "done")?);
+                store.with_db(|db| items::set_done(db, id, done))?;
+                self.inner.emit(json!({ "type": "items_changed" }));
+                Value::Null
+            }
+            "items.delete" => {
+                let id: i64 = param(p, "id")?;
+                store.with_db(|db| items::delete(db, id))?;
+                self.inner.emit(json!({ "type": "items_changed" }));
+                Value::Null
+            }
+            // Items already made from this email.
+            "items.for_message" => {
+                let header_id = store.threading(param(p, "id")?)?.map(|t| t.0).unwrap_or_default();
+                json!(store.with_db(|db| items::for_source(db, &header_id))?)
+            }
+            // Where the email an item came from lives now, or null if it is gone.
+            "items.source" => {
+                let id: i64 = param(p, "id")?;
+                let item = store.with_db(|db| items::get(db, id))?.ok_or_else(|| anyhow!("that item no longer exists"))?;
+                match store.find_by_message_id(item.source_account_id, &item.source_message_id)? {
+                    Some((message_id, folder_id)) => json!({ "message_id": message_id, "folder_id": folder_id }),
+                    None => Value::Null,
+                }
+            }
+            // Asks Claude what is in an email. Proposals come back in an
+            // `items_extracted` event; nothing is saved until the UI saves it.
+            "items.extract" => {
+                let id: i64 = param(p, "id")?;
+                let token = opt::<String>(p, "token").unwrap_or_default();
+                if store.message(id)?.is_none() {
+                    bail!("message no longer exists");
+                }
+                let inner = self.inner.clone();
+                self.runtime.spawn(async move {
+                    match inner.extract_items(id).await {
+                        Ok(out) => inner.emit(json!({
+                            "type": "items_extracted", "token": token, "message_id": id,
+                            "items": out.items, "summary": out.summary, "truncated": out.truncated,
+                        })),
+                        Err(e) => inner.emit(json!({
+                            "type": "items_extract_error", "token": token, "message_id": id,
+                            "message": format!("{e:#}"),
+                        })),
+                    }
+                });
+                Value::Null
+            }
+
+            "claude.status" => {
+                let configured = self.inner.secrets.get(claude::KEY_SECRET)?.is_some_and(|k| !k.trim().is_empty());
+                let model = store
+                    .setting(claude::MODEL_SETTING)?
+                    .filter(|m| !m.trim().is_empty())
+                    .unwrap_or_else(|| claude::DEFAULT_MODEL.to_string());
+                json!({ "configured": configured, "model": model, "default_model": claude::DEFAULT_MODEL })
+            }
+            "claude.set_key" => {
+                let key = param::<String>(p, "key")?.trim().to_string();
+                if key.is_empty() {
+                    self.inner.secrets.delete(claude::KEY_SECRET)?;
+                } else {
+                    self.inner.secrets.set(claude::KEY_SECRET, &key)?;
+                }
                 Value::Null
             }
 
