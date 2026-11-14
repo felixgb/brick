@@ -9,6 +9,8 @@
 #include <QLineEdit>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QRegularExpression>
+#include <QTextCursor>
 #include <QShortcut>
 #include <QUuid>
 #include <QVBoxLayout>
@@ -28,10 +30,25 @@ ComposeWindow::ComposeWindow(Core *core, const Draft &draft, QWidget *parent)
         const QJsonObject a = v.toObject();
         const QString name = a.value("name").toString();
         const QString email = a.value("email").toString();
-        m_from->addItem(name.isEmpty() ? email : QStringLiteral("%1 <%2>").arg(name, email),
-                        qint64(a.value("id").toDouble()));
+        const qint64 id = qint64(a.value("id").toDouble());
+        m_from->addItem(name.isEmpty() ? email : QStringLiteral("%1 <%2>").arg(name, email), id);
+        // Addresses the user may also send as (set in File > Signatures and addresses).
+        const QStringList aliases = m_core->call("settings.get", {{"key", QStringLiteral("aliases_%1").arg(id)}})
+                                        .toString()
+                                        .split(QRegularExpression(QStringLiteral("[,;\\s]+")), Qt::SkipEmptyParts);
+        for (const QString &alias : aliases) {
+            m_from->addItem(name.isEmpty() ? alias : QStringLiteral("%1 <%2>").arg(name, alias), id);
+            m_from->setItemData(m_from->count() - 1, alias, Qt::UserRole + 1);
+        }
     }
-    const int idx = m_from->findData(draft.accountId);
+    int idx = -1;
+    for (int i = 0; i < m_from->count(); ++i) {
+        if (m_from->itemData(i).toLongLong() == draft.accountId &&
+            m_from->itemData(i, Qt::UserRole + 1).toString() == draft.from)
+            idx = i;
+    }
+    if (idx < 0)
+        idx = m_from->findData(draft.accountId);
     if (idx >= 0)
         m_from->setCurrentIndex(idx);
 
@@ -62,6 +79,12 @@ ComposeWindow::ComposeWindow(Core *core, const Draft &draft, QWidget *parent)
     layout->addWidget(m_body, 1);
     layout->addLayout(bottom);
 
+    m_from->setObjectName("composeFrom");
+    m_body->setObjectName("composeBody");
+    m_send->setObjectName("composeSend");
+    applySignature();
+    // A signature belongs to the account it's sent from: swap it when From changes.
+    connect(m_from, qOverload<int>(&QComboBox::currentIndexChanged), this, [this] { applySignature(); });
     connect(m_send, &QPushButton::clicked, this, &ComposeWindow::send);
     connect(new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_Return), this), &QShortcut::activated, this,
             &ComposeWindow::send);
@@ -76,6 +99,35 @@ ComposeWindow::ComposeWindow(Core *core, const Draft &draft, QWidget *parent)
         m_body->setFocus();
         m_body->moveCursor(QTextCursor::Start);
     }
+}
+
+QString ComposeWindow::signatureFor(qint64 accountId) const {
+    const QString sig = m_core->call("settings.get", {{"key", QStringLiteral("signature_%1").arg(accountId)}})
+                            .toString()
+                            .trimmed();
+    return sig.isEmpty() ? QString() : QStringLiteral("-- \n") + sig;
+}
+
+// Puts the sending account's signature above any quoted text (after the cursor
+// line), replacing the previous account's if From was changed.
+void ComposeWindow::applySignature() {
+    const QString next = signatureFor(m_from->currentData().toLongLong());
+    if (next == m_signature)
+        return;
+    QString text = m_body->toPlainText();
+    const QString block = QStringLiteral("\n\n") + m_signature;
+    if (!m_signature.isEmpty() && text.contains(block)) {
+        text.replace(block, next.isEmpty() ? QString() : QStringLiteral("\n\n") + next);
+    } else if (!m_signature.isEmpty() && text.contains(m_signature)) {
+        text.replace(m_signature, next);
+    } else if (!next.isEmpty()) {
+        text = QStringLiteral("\n\n") + next + text;
+    }
+    m_signature = next;
+    const bool atStart = m_body->textCursor().position() == 0;
+    m_body->setPlainText(text);
+    if (atStart)
+        m_body->moveCursor(QTextCursor::Start);
 }
 
 void ComposeWindow::setBusy(bool busy) {
@@ -98,6 +150,9 @@ void ComposeWindow::send() {
     };
     if (m_replyToId != 0)
         params.insert("reply_to_id", m_replyToId);
+    const QString alias = m_from->currentData(Qt::UserRole + 1).toString();
+    if (!alias.isEmpty())
+        params.insert("from", alias);
 
     QString error;
     m_core->call("send", params, &error);

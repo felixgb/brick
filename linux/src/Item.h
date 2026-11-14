@@ -29,6 +29,10 @@ struct Item {
     QString sourceMessageId;
     QString sourceSubject;
     QString sourceFrom;
+    // "", "daily", "weekly", "monthly" or "yearly". The item's date is the
+    // start of the next occurrence still to do.
+    QString repeat;
+    QString repeatUntil;
 
     static Item fromJson(const QJsonObject &o);
     // The form the engine's items.save expects.
@@ -36,8 +40,13 @@ struct Item {
 
     bool isFromEmail() const { return !sourceMessageId.isEmpty(); }
     bool isOverdue() const;
-    // Whether the item falls on the given day, counting every day of a span.
+    // Whether the item falls on the given day, counting every day of a span
+    // and every occurrence of a repeating item.
     bool occursOn(const QString &day) const;
+    // Whether an occurrence of the item starts on this day.
+    bool startsOn(const QDate &day) const;
     // "Thu 12 Nov, 14:00 to 15:00", or empty for an undated item.
     QString whenLabel() const;
+    // "Repeats weekly until 31 Jan 2027", or empty.
+    QString repeatLabel() const;
 };

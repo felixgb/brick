@@ -38,6 +38,8 @@ Item Item::fromJson(const QJsonObject &o) {
     i.sourceMessageId = o.value("source_message_id").toString();
     i.sourceSubject = o.value("source_subject").toString();
     i.sourceFrom = o.value("source_from").toString();
+    i.repeat = o.value("repeat").toString();
+    i.repeatUntil = o.value("repeat_until").toString();
     return i;
 }
 
@@ -56,6 +58,8 @@ QJsonObject Item::toJson() const {
         {"source_message_id", sourceMessageId},
         {"source_subject", sourceSubject},
         {"source_from", sourceFrom},
+        {"repeat", repeat},
+        {"repeat_until", orNull(repeatUntil)},
     };
 }
 
@@ -65,10 +69,64 @@ bool Item::isOverdue() const {
     return (endDate.isEmpty() ? date : endDate) < Day::today();
 }
 
+// Whether an occurrence of the repeating item starting at `start` begins on `o`.
+// Monthly and yearly repeats on the 29th-31st fall on the last day of a short month.
+static bool recursOn(const QDate &o, const QDate &start, const QString &rule) {
+    if (rule == QLatin1String("daily"))
+        return true;
+    if (rule == QLatin1String("weekly"))
+        return start.daysTo(o) % 7 == 0;
+    const int wanted = qMin(start.day(), o.daysInMonth());
+    if (rule == QLatin1String("monthly"))
+        return o.day() == wanted;
+    if (rule == QLatin1String("yearly"))
+        return o.month() == start.month() && o.day() == wanted;
+    return false;
+}
+
+bool Item::startsOn(const QDate &o) const {
+    const QDate start = Day::date(date);
+    if (!start.isValid() || !o.isValid() || o < start)
+        return false;
+    if (repeat.isEmpty())
+        return o == start;
+    const QDate until = Day::date(repeatUntil);
+    if (until.isValid() && o > until)
+        return false;
+    return recursOn(o, start, repeat);
+}
+
 bool Item::occursOn(const QString &day) const {
     if (date.isEmpty())
         return false;
-    return date <= day && day <= (endDate.isEmpty() ? date : endDate);
+    if (repeat.isEmpty())
+        return date <= day && day <= (endDate.isEmpty() ? date : endDate);
+
+    const QDate d = Day::date(day);
+    const QDate start = Day::date(date);
+    if (!d.isValid() || !start.isValid() || d < start)
+        return false;
+    const QDate lastDay = Day::date(endDate);
+    const int span = lastDay.isValid() ? int(start.daysTo(lastDay)) : 0;
+    // An occurrence covering `d` started on d, or up to `span` days before.
+    for (int k = 0; k <= span; ++k) {
+        if (startsOn(d.addDays(-k)))
+            return true;
+    }
+    return false;
+}
+
+QString Item::repeatLabel() const {
+    if (repeat.isEmpty())
+        return {};
+    QString text = QObject::tr("Repeats %1").arg(repeat == QLatin1String("daily")     ? QObject::tr("daily")
+                                                 : repeat == QLatin1String("weekly")  ? QObject::tr("weekly")
+                                                 : repeat == QLatin1String("monthly") ? QObject::tr("monthly")
+                                                                                      : QObject::tr("yearly"));
+    const QDate u = Day::date(repeatUntil);
+    if (u.isValid())
+        text += QObject::tr(" until ") + QLocale().toString(u, QStringLiteral("d MMM yyyy"));
+    return text;
 }
 
 QString Item::whenLabel() const {

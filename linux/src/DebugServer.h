@@ -18,6 +18,7 @@ class QWidget;
 //   {"cmd": "screenshot", "path": "x.png", "window": "objectName?"}
 //   {"cmd": "click", "target": "name" | "text:Label", "pos": [x, y]?, "double": false, "button": "left|right"}
 //   {"cmd": "invoke", "target": "name", "method": "click"}
+//   {"cmd": "action", "text": "Next message"}   trigger a menu or toolbar action
 //   {"cmd": "key", "key": "Return", "mod": "ctrl+shift"?, "target": "name"?}
 //   {"cmd": "type", "text": "hello", "target": "name"?}
 //   {"cmd": "set", "target": "name", "index": 2 | "text": "..." | "checked": true}

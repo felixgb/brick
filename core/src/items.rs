@@ -4,7 +4,7 @@
 //! wall-clock values; nothing here is synced anywhere.
 
 use anyhow::{bail, Result};
-use chrono::{NaiveDate, NaiveTime};
+use chrono::{Days, Months, NaiveDate, NaiveTime};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 
@@ -27,11 +27,42 @@ CREATE TABLE IF NOT EXISTS items (
     source_subject    TEXT NOT NULL DEFAULT '',
     source_from       TEXT NOT NULL DEFAULT '',
     created_at        INTEGER NOT NULL,
-    updated_at        INTEGER NOT NULL
+    updated_at        INTEGER NOT NULL,
+    repeat_rule       TEXT NOT NULL DEFAULT '',  -- '', daily, weekly, monthly, yearly
+    repeat_until      TEXT                       -- YYYY-MM-DD, last day an occurrence may start
 );
 CREATE INDEX IF NOT EXISTS items_by_date ON items(date);
 CREATE INDEX IF NOT EXISTS items_by_source ON items(source_message_id);
 "#;
+
+/// Adds columns that databases made by earlier versions lack. Safe to run every start.
+pub fn migrate(db: &Connection) -> Result<()> {
+    for (column, ddl) in [
+        ("repeat_rule", "ALTER TABLE items ADD COLUMN repeat_rule TEXT NOT NULL DEFAULT ''"),
+        ("repeat_until", "ALTER TABLE items ADD COLUMN repeat_until TEXT"),
+    ] {
+        let has = db.prepare("SELECT 1 FROM pragma_table_info('items') WHERE name = ?1")?.exists([column])?;
+        if !has {
+            db.execute(ddl, [])?;
+        }
+    }
+    Ok(())
+}
+
+pub const REPEATS: [&str; 4] = ["daily", "weekly", "monthly", "yearly"];
+
+/// The start of the occurrence after the one starting on `d`. Monthly and
+/// yearly steps clamp to the end of a short month, so the 31st becomes the
+/// 28th in February (and stays there: the day does not spring back).
+pub fn next_date(d: NaiveDate, rule: &str) -> Option<NaiveDate> {
+    match rule {
+        "daily" => d.checked_add_days(Days::new(1)),
+        "weekly" => d.checked_add_days(Days::new(7)),
+        "monthly" => d.checked_add_months(Months::new(1)),
+        "yearly" => d.checked_add_months(Months::new(12)),
+        _ => None,
+    }
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Item {
@@ -64,6 +95,12 @@ pub struct Item {
     pub created_at: i64,
     #[serde(default)]
     pub updated_at: i64,
+    /// "", "daily", "weekly", "monthly" or "yearly". The item's date is the
+    /// start of the next occurrence still to do.
+    #[serde(default, rename = "repeat")]
+    pub repeat_rule: String,
+    #[serde(default)]
+    pub repeat_until: Option<String>,
 }
 
 fn clean_date(v: Option<String>) -> Option<String> {
@@ -98,6 +135,15 @@ impl Item {
         if self.end_date.as_ref().is_some_and(|e| Some(e) <= self.date.as_ref()) {
             self.end_date = None;
         }
+        // Repeating needs a day to repeat from, and an end to the series must follow its start.
+        self.repeat_rule = self.repeat_rule.trim().to_ascii_lowercase();
+        if self.date.is_none() || !REPEATS.contains(&self.repeat_rule.as_str()) {
+            self.repeat_rule.clear();
+        }
+        self.repeat_until = clean_date(self.repeat_until);
+        if self.repeat_rule.is_empty() || self.repeat_until.as_ref().is_some_and(|u| Some(u) < self.date.as_ref()) {
+            self.repeat_until = None;
+        }
         if self.start_time.is_none() {
             self.end_time = None;
         }
@@ -110,7 +156,8 @@ impl Item {
 }
 
 const COLS: &str = "id, title, notes, location, date, end_date, start_time, end_time, done, \
-                    source_account_id, source_message_id, source_subject, source_from, created_at, updated_at";
+                    source_account_id, source_message_id, source_subject, source_from, created_at, updated_at, \
+                    repeat_rule, repeat_until";
 
 fn from_row(r: &Row) -> rusqlite::Result<Item> {
     Ok(Item {
@@ -129,6 +176,8 @@ fn from_row(r: &Row) -> rusqlite::Result<Item> {
         source_from: r.get(12)?,
         created_at: r.get(13)?,
         updated_at: r.get(14)?,
+        repeat_rule: r.get(15)?,
+        repeat_until: r.get(16)?,
     })
 }
 
@@ -171,8 +220,8 @@ pub fn save(db: &Connection, item: Item) -> Result<Item> {
         db.execute(
             "INSERT INTO items(title, notes, location, date, end_date, start_time, end_time, done, done_at,
                                source_account_id, source_message_id, source_subject, source_from,
-                               created_at, updated_at)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14)",
+                               created_at, updated_at, repeat_rule, repeat_until)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14, ?15, ?16)",
             params![
                 item.title,
                 item.notes,
@@ -187,7 +236,9 @@ pub fn save(db: &Connection, item: Item) -> Result<Item> {
                 item.source_message_id,
                 item.source_subject,
                 item.source_from,
-                ts
+                ts,
+                item.repeat_rule,
+                item.repeat_until
             ],
         )?;
         db.last_insert_rowid()
@@ -197,7 +248,7 @@ pub fn save(db: &Connection, item: Item) -> Result<Item> {
             "UPDATE items SET title = ?2, notes = ?3, location = ?4, date = ?5, end_date = ?6,
                               start_time = ?7, end_time = ?8,
                               done_at = CASE WHEN ?9 AND NOT done THEN ?10 WHEN ?9 THEN done_at ELSE NULL END,
-                              done = ?9, updated_at = ?10
+                              done = ?9, updated_at = ?10, repeat_rule = ?11, repeat_until = ?12
              WHERE id = ?1",
             params![
                 item.id,
@@ -209,7 +260,9 @@ pub fn save(db: &Connection, item: Item) -> Result<Item> {
                 item.start_time,
                 item.end_time,
                 item.done,
-                ts
+                ts,
+                item.repeat_rule,
+                item.repeat_until
             ],
         )?;
         if n == 0 {
@@ -222,6 +275,30 @@ pub fn save(db: &Connection, item: Item) -> Result<Item> {
 
 pub fn set_done(db: &Connection, id: i64, done: bool) -> Result<()> {
     let ts = now();
+    // Finishing a repeating item moves it on to its next occurrence instead;
+    // it is only finished for good once the series has run out.
+    if done {
+        if let Some(item) = get(db, id)? {
+            if let Some(date) = item.date.as_deref().and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok()) {
+                let next = next_date(date, &item.repeat_rule);
+                let in_series = next.is_some_and(|n| item.repeat_until.as_deref().map_or(true, |u| n.format("%Y-%m-%d").to_string().as_str() <= u));
+                if let (Some(next), true) = (next, in_series) {
+                    let span = item
+                        .end_date
+                        .as_deref()
+                        .and_then(|e| NaiveDate::parse_from_str(e, "%Y-%m-%d").ok())
+                        .map(|e| (e - date).num_days())
+                        .unwrap_or(0);
+                    let end = (span > 0).then(|| next + chrono::Duration::days(span)).map(|e| e.format("%Y-%m-%d").to_string());
+                    db.execute(
+                        "UPDATE items SET date = ?2, end_date = ?3, done = 0, done_at = NULL, updated_at = ?4 WHERE id = ?1",
+                        params![id, next.format("%Y-%m-%d").to_string(), end, ts],
+                    )?;
+                    return Ok(());
+                }
+            }
+        }
+    }
     db.execute(
         "UPDATE items SET done = ?2, done_at = CASE WHEN ?2 THEN ?3 ELSE NULL END, updated_at = ?3 WHERE id = ?1",
         params![id, done, ts],
@@ -277,6 +354,75 @@ mod tests {
         }
         .normalise();
         assert_eq!(i.end_time.as_deref(), Some("02:00"), "overnight items keep their end");
+    }
+
+    #[test]
+    fn repeats_are_sanitised() {
+        let base = Item { date: Some("2026-11-20".into()), repeat_rule: " Weekly ".into(), ..item("x") };
+        assert_eq!(base.clone().normalise().repeat_rule, "weekly");
+        assert_eq!(Item { repeat_rule: "fortnightly".into(), ..base.clone() }.normalise().repeat_rule, "");
+        assert_eq!(Item { date: None, ..base.clone() }.normalise().repeat_rule, "", "no day, nothing to repeat from");
+        assert_eq!(Item { repeat_until: Some("2026-01-01".into()), ..base.clone() }.normalise().repeat_until, None);
+        assert_eq!(
+            Item { repeat_until: Some("2027-01-01".into()), ..base }.normalise().repeat_until.as_deref(),
+            Some("2027-01-01")
+        );
+    }
+
+    #[test]
+    fn next_dates_clamp_to_month_end() {
+        let d = |s: &str| NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap();
+        assert_eq!(next_date(d("2026-11-30"), "daily"), Some(d("2026-12-01")));
+        assert_eq!(next_date(d("2026-11-30"), "weekly"), Some(d("2026-12-07")));
+        assert_eq!(next_date(d("2027-01-31"), "monthly"), Some(d("2027-02-28")));
+        assert_eq!(next_date(d("2028-02-29"), "yearly"), Some(d("2029-02-28")));
+        assert_eq!(next_date(d("2026-11-30"), ""), None);
+    }
+
+    #[test]
+    fn finishing_a_repeating_item_moves_it_on() {
+        let c = db();
+        let weekly = save(
+            &c,
+            Item {
+                date: Some("2026-11-20".into()),
+                end_date: Some("2026-11-22".into()),
+                repeat_rule: "weekly".into(),
+                repeat_until: Some("2026-12-01".into()),
+                ..item("Retreat")
+            },
+        )
+        .unwrap();
+
+        set_done(&c, weekly.id, true).unwrap();
+        let moved = get(&c, weekly.id).unwrap().unwrap();
+        assert!(!moved.done);
+        assert_eq!((moved.date.as_deref(), moved.end_date.as_deref()), (Some("2026-11-27"), Some("2026-11-29")));
+
+        // The next one would start on 4 Dec, after the series ends: finishing
+        // this one finishes the item for good.
+        set_done(&c, weekly.id, true).unwrap();
+        let last = get(&c, weekly.id).unwrap().unwrap();
+        assert!(last.done, "the series has run out");
+        assert_eq!(last.date.as_deref(), Some("2026-11-27"));
+    }
+
+    #[test]
+    fn migrate_adds_missing_columns() {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE items (id INTEGER PRIMARY KEY, title TEXT NOT NULL, notes TEXT NOT NULL DEFAULT '',
+             location TEXT NOT NULL DEFAULT '', date TEXT, end_date TEXT, start_time TEXT, end_time TEXT,
+             done INTEGER NOT NULL DEFAULT 0, done_at INTEGER, source_account_id INTEGER,
+             source_message_id TEXT NOT NULL DEFAULT '', source_subject TEXT NOT NULL DEFAULT '',
+             source_from TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+             INSERT INTO items(title, created_at, updated_at) VALUES('old', 1, 1);",
+        )
+        .unwrap();
+        migrate(&c).unwrap();
+        migrate(&c).unwrap(); // idempotent
+        let items = list(&c).unwrap();
+        assert_eq!((items[0].title.as_str(), items[0].repeat_rule.as_str()), ("old", ""));
     }
 
     #[test]

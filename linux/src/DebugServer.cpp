@@ -344,6 +344,32 @@ QJsonObject DebugServer::run(const QJsonObject &cmd, QLocalSocket *socket, bool 
         return ok({{"queued", true}});
     }
 
+    // Triggers a menu or toolbar action by its text ("&" ignored). Key events
+    // sent with `key` don't go through Qt's shortcut system, so use this to
+    // test what a shortcut does.
+    if (name == QLatin1String("action")) {
+        const QString wanted = cmd.value("text").toString();
+        QAction *found = nullptr;
+        for (QAction *a : m_window->findChildren<QAction *>()) {
+            QString text = a->text();
+            text.remove(QLatin1Char('&'));
+            if (text == wanted && !a->isSeparator()) {
+                found = a;
+                break;
+            }
+        }
+        if (!found)
+            return err(QStringLiteral("no action called ") + wanted);
+        if (!found->isEnabled())
+            return err(QStringLiteral("action is disabled: ") + wanted);
+        QPointer<QAction> guard(found);
+        QTimer::singleShot(0, this, [guard] {
+            if (guard)
+                guard->trigger();
+        });
+        return ok({{"queued", true}});
+    }
+
     if (name == QLatin1String("invoke")) {
         QWidget *w = find(cmd.value("target"));
         if (!w)

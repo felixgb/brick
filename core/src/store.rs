@@ -150,6 +150,7 @@ impl Store {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.execute_batch(SCHEMA)?;
         conn.execute_batch(crate::items::SCHEMA)?;
+        crate::items::migrate(&conn)?;
         Ok(Self { conn: Arc::new(Mutex::new(conn)) })
     }
 
@@ -468,6 +469,33 @@ impl Store {
         Ok(rows)
     }
 
+    /// Messages in every folder with this role, across accounts: the unified inbox.
+    pub fn list_messages_by_role(&self, role: &str, offset: i64, limit: i64) -> Result<Vec<MessageRow>> {
+        let db = self.db();
+        let mut st = db.prepare_cached(&format!(
+            "SELECT {ROW_COLS} FROM messages
+             WHERE folder_id IN (SELECT id FROM folders WHERE role = ?1)
+             ORDER BY date DESC, id DESC LIMIT ?3 OFFSET ?2"
+        ))?;
+        let rows = st.query_map(params![role, offset, limit], row_to_message)?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub fn count_messages_by_role(&self, role: &str) -> Result<i64> {
+        Ok(self.db().query_row(
+            "SELECT COUNT(*) FROM messages WHERE folder_id IN (SELECT id FROM folders WHERE role = ?1)",
+            [role],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// Addresses the user may send as, besides the account's own, kept in the
+    /// setting `aliases_<account id>` (separated by commas, semicolons or spaces).
+    pub fn aliases(&self, account_id: i64) -> Result<Vec<String>> {
+        let raw = self.setting(&format!("aliases_{account_id}"))?.unwrap_or_default();
+        Ok(raw.split([',', ';', '\n', ' ']).map(str::trim).filter(|a| !a.is_empty()).map(String::from).collect())
+    }
+
     pub fn count_messages(&self, folder_id: i64) -> Result<i64> {
         Ok(self.db().query_row("SELECT COUNT(*) FROM messages WHERE folder_id = ?1", [folder_id], |r| r.get(0))?)
     }
@@ -662,5 +690,29 @@ mod tests {
 
         s.remove_account(acc).unwrap();
         assert!(s.search("zebra", None, 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn unified_inbox_spans_accounts_and_aliases_are_read_from_settings() {
+        let s = Store::open_in_memory().unwrap();
+        let a = s.add_account(&account()).unwrap();
+        let b = s.add_account(&Account { email: "b@example.com".into(), ..account() }).unwrap();
+        let (ia, ib) = (
+            s.upsert_folder(a, "INBOX", "Inbox", "inbox", true).unwrap(),
+            s.upsert_folder(b, "INBOX", "Inbox", "inbox", true).unwrap(),
+        );
+        let sent = s.upsert_folder(a, "Sent", "Sent", "sent", true).unwrap();
+        s.insert_messages(a, ia, &[msg(1, "one"), msg(3, "three")]).unwrap();
+        s.insert_messages(b, ib, &[msg(2, "two")]).unwrap();
+        s.insert_messages(a, sent, &[msg(9, "sent")]).unwrap();
+
+        assert_eq!(s.count_messages_by_role("inbox").unwrap(), 3);
+        let rows = s.list_messages_by_role("inbox", 0, 10).unwrap();
+        assert_eq!(rows.iter().map(|r| r.uid).collect::<Vec<_>>(), vec![3, 2, 1], "newest first across accounts");
+        assert_eq!(s.list_messages_by_role("inbox", 1, 1).unwrap()[0].uid, 2, "paging works");
+
+        assert!(s.aliases(a).unwrap().is_empty());
+        s.set_setting(&format!("aliases_{a}"), "me@work.example, shop@example.com;\nx@y.example").unwrap();
+        assert_eq!(s.aliases(a).unwrap(), ["me@work.example", "shop@example.com", "x@y.example"]);
     }
 }

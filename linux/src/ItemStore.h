@@ -22,6 +22,18 @@ public:
     QString save(const Item &item);
     void setDone(const Item &item, bool done);
     void remove(const Item &item);
+    struct ImportResult {
+        int added = 0;
+        int skipped = 0;
+        int repeatsDropped = 0;
+        QString error;
+    };
+    // The whole list as iCalendar text; empty with *error set on failure.
+    QString exportIcs(QString *error) const;
+    ImportResult importIcs(const QString &text);
+    // Adds the calendar invitation carried by an email, linked back to it.
+    ImportResult importInvitation(qint64 messageId);
+
     // Items made from an email, for showing under it.
     QList<Item> forMessage(qint64 messageId) const;
 

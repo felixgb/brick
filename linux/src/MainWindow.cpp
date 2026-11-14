@@ -2,6 +2,8 @@
 
 #include <QAction>
 #include <QCloseEvent>
+#include <QFile>
+#include <QFileDialog>
 #include <QDateTime>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -30,6 +32,7 @@
 #include <QVBoxLayout>
 
 #include "AccountDialog.h"
+#include "AccountOptionsDialog.h"
 #include "CalendarView.h"
 #include "ClaudeDialogs.h"
 #include "Core.h"
@@ -41,7 +44,7 @@
 
 namespace {
 
-enum { FolderIdRole = Qt::UserRole, AccountIdRole, FolderRoleRole };
+enum { FolderIdRole = Qt::UserRole, AccountIdRole, FolderRoleRole, UnifiedRole };
 
 qint64 jsonId(const QJsonValue &v) {
     return qint64(v.toDouble());
@@ -157,6 +160,13 @@ void MainWindow::buildActions() {
     m_syncAct->setShortcut(QKeySequence::Refresh);
     connect(m_syncAct, &QAction::triggered, this, [this] { m_core->call("sync.now"); });
 
+    m_nextAct = new QAction(tr("Next message"), this);
+    m_nextAct->setShortcut(QKeySequence(Qt::Key_J));
+    connect(m_nextAct, &QAction::triggered, this, [this] { moveCurrent(1); });
+    m_prevAct = new QAction(tr("Previous message"), this);
+    m_prevAct->setShortcut(QKeySequence(Qt::Key_K));
+    connect(m_prevAct, &QAction::triggered, this, [this] { moveCurrent(-1); });
+
     m_extractAct = new QAction(themed("view-task"), tr("Add to To-do"), this);
     m_extractAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_T));
     m_extractAct->setToolTip(tr("Ask Claude to find to-dos and events in this email"));
@@ -165,7 +175,7 @@ void MainWindow::buildActions() {
     m_newItemAct = new QAction(themed("list-add"), tr("New item…"), this);
     m_newItemAct->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_N));
     connect(m_newItemAct, &QAction::triggered, this,
-            [this] { newItem(m_stack->currentIndex() == 2 ? Day::string(m_calendar->grid()->selected()) : QString()); });
+            [this] { newItem(m_stack->currentIndex() == 2 ? m_calendar->selectedDay() : QString()); });
     addAction(m_newItemAct);
 }
 
@@ -176,9 +186,12 @@ void MainWindow::buildUi() {
     file->addAction(m_syncAct);
     file->addSeparator();
     file->addAction(m_newItemAct);
+    file->addAction(tr("Import calendar…"), this, &MainWindow::importCalendar);
+    file->addAction(tr("Export calendar…"), this, &MainWindow::exportCalendar);
     file->addSeparator();
     file->addAction(tr("Add account…"), this, &MainWindow::addAccount);
     file->addAction(tr("Remove account…"), this, &MainWindow::removeAccount);
+    file->addAction(tr("Signatures and addresses…"), this, &MainWindow::accountOptions);
     file->addAction(tr("Claude settings…"), this, &MainWindow::claudeSettings);
     file->addSeparator();
     QAction *quit = file->addAction(tr("Quit"), this, &QWidget::close);
@@ -186,6 +199,8 @@ void MainWindow::buildUi() {
 
     QMenu *message = menuBar()->addMenu(tr("&Message"));
     message->addActions({m_replyAct, m_replyAllAct, m_forwardAct});
+    message->addSeparator();
+    message->addActions({m_nextAct, m_prevAct});
     message->addSeparator();
     message->addActions({m_archiveAct, m_deleteAct});
     message->addSeparator();
@@ -316,6 +331,18 @@ void MainWindow::buildUi() {
     headerLayout->addWidget(m_subject);
     headerLayout->addWidget(m_meta);
     headerLayout->addWidget(m_remoteBar);
+    m_inviteBar = new QWidget;
+    m_inviteBar->setObjectName("inviteBar");
+    auto *inviteLayout = new QHBoxLayout(m_inviteBar);
+    inviteLayout->setContentsMargins(0, 0, 0, 0);
+    inviteLayout->addWidget(new QLabel(tr("This email has a calendar invitation.")), 1);
+    auto *addInvite = new QPushButton(tr("Add to calendar"));
+    addInvite->setObjectName("addInvitation");
+    inviteLayout->addWidget(addInvite);
+    connect(addInvite, &QPushButton::clicked, this, &MainWindow::addInvitation);
+    m_inviteBar->hide();
+    headerLayout->addWidget(m_inviteBar);
+
     m_linked = new QLabel;
     m_linked->setObjectName("linkedItems");
     m_linked->setWordWrap(true);
@@ -375,13 +402,33 @@ void MainWindow::buildUi() {
 // ---- folders ---------------------------------------------------------------
 
 void MainWindow::reloadFolders() {
-    const qint64 selected = m_model->isSearch() ? 0 : m_model->folderId();
+    const qint64 selected = m_model->isSearch() || m_model->isUnified() ? 0 : m_model->folderId();
     QSignalBlocker block(m_folders);
     m_folders->clear();
 
     QTreeWidgetItem *toSelect = nullptr;
     QTreeWidgetItem *firstInbox = nullptr;
     const QJsonArray accounts = m_core->call("accounts.list").toArray();
+
+    // With more than one account, one entry for all their inboxes.
+    QTreeWidgetItem *unified = nullptr;
+    if (accounts.size() > 1) {
+        int unread = 0;
+        for (const QJsonValue &av : accounts) {
+            const QJsonArray fs = m_core->call("folders.list", {{"account_id", av.toObject().value("id")}}).toArray();
+            for (const QJsonValue &fv : fs) {
+                if (fv.toObject().value("role").toString() == QLatin1String("inbox"))
+                    unread += fv.toObject().value("unread").toInt();
+            }
+        }
+        unified = new QTreeWidgetItem(m_folders, {unread > 0 ? tr("All inboxes (%1)").arg(unread) : tr("All inboxes")});
+        unified->setData(0, UnifiedRole, QStringLiteral("inbox"));
+        QFont f = unified->font(0);
+        f.setBold(true);
+        unified->setFont(0, f);
+        if (m_model->isUnified())
+            toSelect = unified;
+    }
     for (const QJsonValue &av : accounts) {
         const QJsonObject account = av.toObject();
         const qint64 accountId = jsonId(account.value("id"));
@@ -421,7 +468,7 @@ void MainWindow::reloadFolders() {
 
     if (toSelect) {
         m_folders->setCurrentItem(toSelect);
-    } else if (!m_model->isSearch() && firstInbox) {
+    } else if (!m_model->isSearch() && !m_model->isUnified() && firstInbox) {
         // Nothing open yet (first run, or the open folder went away).
         block.unblock();
         m_folders->setCurrentItem(firstInbox);
@@ -430,13 +477,16 @@ void MainWindow::reloadFolders() {
 
 void MainWindow::folderSelected() {
     QTreeWidgetItem *item = m_folders->currentItem();
-    if (!item || !item->data(0, FolderIdRole).isValid())
+    if (!item || (!item->data(0, FolderIdRole).isValid() && !item->data(0, UnifiedRole).isValid()))
         return;
     if (!m_search->text().isEmpty()) {
         QSignalBlocker block(m_search);
         m_search->clear();
     }
-    m_model->showFolder(item->data(0, FolderIdRole).toLongLong());
+    if (item->data(0, UnifiedRole).isValid())
+        m_model->showRole(item->data(0, UnifiedRole).toString());
+    else
+        m_model->showFolder(item->data(0, FolderIdRole).toLongLong());
     clearReader();
     updateActions();
 }
@@ -548,6 +598,7 @@ void MainWindow::showMessage(qint64 id, bool allowRemote) {
         m_pendingBodyId = id;
         m_shownText.clear();
         m_remoteBar->hide();
+        m_inviteBar->hide();
         m_meta->setText(meta);
         m_view->showHtml(QStringLiteral("<body style=\"font:14px sans-serif;color:#777;margin:16px\">%1</body>")
                              .arg(tr("Loading…")),
@@ -567,6 +618,7 @@ void MainWindow::showMessage(qint64 id, bool allowRemote) {
     }
     m_meta->setText(meta);
     m_remoteBar->setVisible(body.value("blocked_remote").toBool());
+    m_inviteBar->setVisible(body.value("invitation").toBool());
     m_view->showHtml(body.value("html").toString(), allowRemote);
 }
 
@@ -575,6 +627,7 @@ void MainWindow::clearReader() {
     m_pendingBodyId = 0;
     m_shownText.clear();
     m_shownCc.clear();
+    m_inviteBar->hide();
     m_linked->hide();
     m_subject->hide();
     m_meta->hide();
@@ -585,6 +638,15 @@ void MainWindow::clearReader() {
 }
 
 void MainWindow::updateActions() {
+    // Mail shortcuts (A, M, S, J, K ...) must not act on a hidden mail list.
+    if (m_stack->currentIndex() != 0) {
+        for (QAction *a : {m_replyAct, m_replyAllAct, m_forwardAct, m_archiveAct, m_deleteAct, m_readAct, m_starAct,
+                           m_extractAct, m_nextAct, m_prevAct})
+            a->setEnabled(false);
+        return;
+    }
+    m_nextAct->setEnabled(true);
+    m_prevAct->setEnabled(true);
     const QList<qint64> ids = selectedIds();
     const QJsonObject m = currentMessage();
     const bool one = !m.isEmpty();
@@ -601,8 +663,6 @@ void MainWindow::updateActions() {
     m_starAct->setText(one && m.value("flagged").toBool() ? tr("Remove star") : tr("Star"));
     m_newAct->setEnabled(!m_core->call("accounts.list").toArray().isEmpty());
 
-    if (m_stack->currentIndex() != 0)
-        return;
     QString status;
     if (m_syncing > 0)
         status = tr("Checking mail…");
@@ -740,7 +800,7 @@ void MainWindow::onEvent(const QJsonObject &event) {
     const QString type = event.value("type").toString();
 
     if (type == QLatin1String("messages_changed")) {
-        if (m_model->isSearch() || jsonId(event.value("folder_id")) == m_model->folderId())
+        if (m_model->isSearch() || m_model->isUnified() || jsonId(event.value("folder_id")) == m_model->folderId())
             m_refreshTimer->start();
     } else if (type == QLatin1String("folders_changed") || type == QLatin1String("accounts_changed")) {
         reloadFolders();
@@ -748,7 +808,7 @@ void MainWindow::onEvent(const QJsonObject &event) {
     } else if (type == QLatin1String("body_ready")) {
         if (jsonId(event.value("id")) == m_pendingBodyId)
             showMessage(m_pendingBodyId, m_shownAllowRemote);
-        if (jsonId(event.value("folder_id")) == m_model->folderId())
+        if (m_model->isUnified() || jsonId(event.value("folder_id")) == m_model->folderId())
             m_refreshTimer->start(); // the row gained its preview text
     } else if (type == QLatin1String("body_error")) {
         if (jsonId(event.value("id")) == m_pendingBodyId) {
@@ -797,8 +857,8 @@ int MainWindow::view() const {
 void MainWindow::setView(int index) {
     m_stack->setCurrentIndex(index);
     m_mailBar->setVisible(index == 0);
+    updateActions();
     if (index == 0) {
-        updateActions();
         m_list->setFocus();
     } else {
         m_statusLabel->clear();
@@ -806,9 +866,10 @@ void MainWindow::setView(int index) {
     }
 }
 
-void MainWindow::newItem(const QString &day) {
+void MainWindow::newItem(const QString &day, const QString &time) {
     Item item;
     item.date = day;
+    item.startTime = day.isEmpty() ? QString() : time;
     editItem(item);
 }
 
@@ -863,6 +924,79 @@ void MainWindow::showLinkedItems() {
         parts << (i.whenLabel().isEmpty() ? i.title : QStringLiteral("%1 (%2)").arg(i.title, i.whenLabel()));
     m_linked->setText(tr("On your lists: %1").arg(parts.join(QStringLiteral("; "))));
     m_linked->show();
+}
+
+void MainWindow::accountOptions() {
+    AccountOptionsDialog dialog(m_core, this);
+    dialog.exec();
+}
+
+// J and K: step through the list without leaving the keyboard.
+void MainWindow::moveCurrent(int delta) {
+    const int rows = m_model->rowCount();
+    if (rows == 0)
+        return;
+    const QModelIndexList selected = m_list->selectionModel()->selectedRows();
+    const int current = selected.isEmpty() ? (delta > 0 ? -1 : rows) : selected.first().row();
+    const int row = qBound(0, current + delta, rows - 1);
+    const QModelIndex index = m_model->index(row, 0);
+    m_list->setCurrentIndex(index);
+    m_list->scrollTo(index);
+}
+
+void MainWindow::importCalendar() {
+    const QString path = QFileDialog::getOpenFileName(this, tr("Import calendar"), QString(),
+                                                      tr("Calendar files (*.ics);;All files (*)"));
+    if (path.isEmpty())
+        return;
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        statusBar()->showMessage(tr("Couldn't read %1").arg(path), 8000);
+        return;
+    }
+    const ItemStore::ImportResult r = m_items->importIcs(QString::fromUtf8(file.readAll()));
+    if (!r.error.isEmpty()) {
+        statusBar()->showMessage(r.error, 8000);
+        return;
+    }
+    QString text = tr("Imported %n item(s)", nullptr, r.added);
+    if (r.skipped > 0)
+        text += tr(", %1 already there").arg(r.skipped);
+    if (r.repeatsDropped > 0)
+        text += tr(". %n repeat(s) were too complex to keep", nullptr, r.repeatsDropped);
+    statusBar()->showMessage(text, 10000);
+}
+
+void MainWindow::exportCalendar() {
+    const QString path = QFileDialog::getSaveFileName(this, tr("Export calendar"), QStringLiteral("brick-calendar.ics"),
+                                                      tr("Calendar files (*.ics)"));
+    if (path.isEmpty())
+        return;
+    QString error;
+    const QString text = m_items->exportIcs(&error);
+    if (!error.isEmpty()) {
+        statusBar()->showMessage(error, 8000);
+        return;
+    }
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly) || file.write(text.toUtf8()) < 0) {
+        statusBar()->showMessage(tr("Couldn't write %1").arg(path), 8000);
+        return;
+    }
+    statusBar()->showMessage(tr("Exported %1").arg(path), 8000);
+}
+
+// The invitation bar's button: adds what the email's invitation describes.
+void MainWindow::addInvitation() {
+    if (m_shownId == 0)
+        return;
+    const ItemStore::ImportResult r = m_items->importInvitation(m_shownId);
+    if (!r.error.isEmpty())
+        statusBar()->showMessage(r.error, 8000);
+    else if (r.added == 0)
+        statusBar()->showMessage(tr("Already on your calendar"), 6000);
+    else
+        statusBar()->showMessage(tr("Added %n item(s) to your calendar", nullptr, r.added), 6000);
 }
 
 void MainWindow::claudeSettings() {

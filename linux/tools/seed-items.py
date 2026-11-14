@@ -15,8 +15,9 @@ def day(n):
     return (today + dt.timedelta(days=n)).isoformat()
 
 
-def item(title, date=None, start=None, end=None, location="", notes="", done=False, end_date=None, source=None):
-    o = {"id": 0, "title": title, "notes": notes, "location": location, "date": date, "end_date": end_date,
+def item(title, date=None, start=None, end=None, location="", notes="", done=False, end_date=None, source=None,
+         repeat="", until=None):
+    o = {"repeat": repeat, "repeat_until": until, "id": 0, "title": title, "notes": notes, "location": location, "date": date, "end_date": end_date,
          "start_time": start, "end_time": end, "done": done, "source_account_id": None,
          "source_message_id": "", "source_subject": "", "source_from": ""}
     if source:
@@ -42,6 +43,12 @@ items = [
     item("Standup", day(0), "09:30", "09:45"),
     item("Review pull requests", day(0)),
     item("Water the plants", day(0), done=True),
+    item("Design review", day(1), "10:30", "11:30", "Room 2"),
+    item("Workshop", day(3), "13:00", "17:00", "Studio"),
+    item("Planning retro", day(3), "15:00", "16:00"),
+    item("Team standup", day(1), "09:30", "09:45", repeat="weekly"),
+    item("Morning run", day(0), "07:00", "07:45", repeat="daily", until=day(12)),
+    item("Pay rent", day(17), repeat="monthly"),
     item("Renew passport"),
     item("Read the ASAN paper"),
     item("Order printer ink"),

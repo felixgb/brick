@@ -24,24 +24,42 @@
  *   accounts.remove     {id}
  *   folders.list        {account_id}                 -> [folder]
  *   messages.list       {folder_id, offset, limit}   -> {total, offset, rows}
+ *                       {role, offset, limit}        the same across every account's folders of that
+ *                                                    role; role "inbox" is the unified inbox
  *   messages.search     {query, account_id?, limit?} -> {rows}
  *   messages.get        {id, allow_remote?}          -> {message, cc, body | null}
- *                                                       body null: it is being fetched; wait for body_ready
+ *                                                       body null: it is being fetched; wait for body_ready.
+ *                                                       body.invitation is true when the email carries a
+ *                                                       calendar invitation (see items.import_invitation)
  *   messages.set_flags  {ids, seen?, flagged?}
  *   messages.move       {ids, to: "archive" | "trash" | "junk" | folder_id}
  *   attachments.save    {id, index, path}
- *   send                {account_id, to, cc, bcc, subject, text, reply_to_id?, token}
+ *   send                {account_id, to, cc, bcc, subject, text, reply_to_id?, from?, token}
+ *                                                    from: send as one of the account's aliases (setting
+ *                                                    aliases_<account id>); anything else is refused
  *                                                    -> then send_done | send_error (with token)
  *   sync.now
  *
  *   To-do and calendar items (one kind of thing; an item with no date is
  *   only a to-do). Dates are "YYYY-MM-DD" and times "HH:MM", local time.
  *   items.list                                       -> [item]
+ *                       An item may repeat: "repeat" is "", "daily", "weekly", "monthly" or "yearly",
+ *                       and "repeat_until" (day, optional) is the last day an occurrence may start.
+ *                       The item's date is its next occurrence still to do; items.set_done on a
+ *                       repeating item moves it to the following occurrence instead of finishing it,
+ *                       and only finishes it when the series has run out.
  *   items.save          {item}                       -> item   (id 0 or absent creates)
  *   items.set_done      {id, done}
  *   items.delete        {id}
  *   items.for_message   {id}                         -> [item] made from that email
  *   items.source        {id}                         -> {message_id, folder_id} | null
+ *   items.export_ics                                 -> text of an iCalendar file with every item
+ *   items.import_ics    {text}                       -> {added, skipped, repeats_dropped}
+ *                       Items already present (same title, day, start time and end day) are skipped.
+ *                       Time zones are ignored (a TZID time is taken as local; UTC is converted to
+ *                       local); repeats other than a plain daily/weekly/monthly/yearly are dropped.
+ *   items.import_invitation {id}                     -> {added, skipped, repeats_dropped}
+ *                       Adds the calendar invitations carried by an email, linked back to it.
  *   items.extract       {id, token}                  -> then items_extracted | items_extract_error
  *                                                       Sends the email to Claude. Nothing is saved;
  *                                                       save the proposals you keep with items.save.
@@ -60,7 +78,9 @@
  *   error {account_id, message}
  *
  * Settings keys for OAuth: google_client_id, google_client_secret,
- * microsoft_client_id. Claude model: claude_model.
+ * microsoft_client_id. Claude model: claude_model. Per account (<id> is the
+ * account id): aliases_<id> (extra addresses to send as, separated by commas or
+ * whitespace) and signature_<id> (used by front ends; the engine only stores it).
  */
 #ifndef BRICK_H
 #define BRICK_H

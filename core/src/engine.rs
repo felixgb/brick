@@ -11,7 +11,7 @@ use crate::secrets::{self, KeyringStore, MemoryStore, SecretStore};
 use crate::store::Store;
 use crate::sync::{self, Emit, Inner};
 use crate::items::{self, Item};
-use crate::{claude, mime, oauth, providers, smtp};
+use crate::{claude, ics, mime, oauth, providers, smtp};
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -96,15 +96,26 @@ impl Engine {
 
             "folders.list" => json!(store.folders(param(p, "account_id")?)?),
 
+            // One folder, or with "role" instead of "folder_id" every folder of that
+            // role across accounts (role "inbox" is the unified inbox).
             "messages.list" => {
-                let folder_id: i64 = param(p, "folder_id")?;
                 let offset = opt::<i64>(p, "offset").unwrap_or(0).max(0);
                 let limit = opt::<i64>(p, "limit").unwrap_or(200).clamp(1, 1000);
-                json!({
-                    "total": store.count_messages(folder_id)?,
-                    "offset": offset,
-                    "rows": store.list_messages(folder_id, offset, limit)?,
-                })
+                match opt::<String>(p, "role") {
+                    Some(role) => json!({
+                        "total": store.count_messages_by_role(&role)?,
+                        "offset": offset,
+                        "rows": store.list_messages_by_role(&role, offset, limit)?,
+                    }),
+                    None => {
+                        let folder_id: i64 = param(p, "folder_id")?;
+                        json!({
+                            "total": store.count_messages(folder_id)?,
+                            "offset": offset,
+                            "rows": store.list_messages(folder_id, offset, limit)?,
+                        })
+                    }
+                }
             }
             "messages.search" => {
                 let q: String = param(p, "query")?;
@@ -128,6 +139,7 @@ impl Engine {
                 let token = opt::<String>(p, "token").unwrap_or_default();
                 // Catch address mistakes now, while the compose window is still open.
                 let acc = store.account(draft.account_id)?.ok_or_else(|| anyhow!("choose an account to send from"))?;
+                smtp::check_sender(&acc, &store.aliases(acc.id)?, &draft)?;
                 smtp::build(&acc, &draft, None)?;
                 let inner = self.inner.clone();
                 self.runtime.spawn(async move {
@@ -157,6 +169,32 @@ impl Engine {
                 store.with_db(|db| items::delete(db, id))?;
                 self.inner.emit(json!({ "type": "items_changed" }));
                 Value::Null
+            }
+            // The whole list as an iCalendar file's text.
+            "items.export_ics" => json!(ics::export(&store.with_db(items::list)?)),
+            // Adds the items in iCalendar text. Items the list already has are skipped.
+            "items.import_ics" => {
+                let text: String = param(p, "text")?;
+                let (found, dropped) = ics::import(&text);
+                json!(self.import_items(found, dropped, None)?)
+            }
+            // Adds the calendar invitations carried by an email, linked back to it.
+            "items.import_invitation" => {
+                let id: i64 = param(p, "id")?;
+                let row = store.message(id)?.ok_or_else(|| anyhow!("message no longer exists"))?;
+                let raw = store.body(id)?.ok_or_else(|| anyhow!("message has not been downloaded yet"))?;
+                let header_id = store.threading(id)?.map(|t| t.0).unwrap_or_default();
+                let (mut found, mut dropped) = (Vec::new(), 0);
+                for text in mime::invitations(&raw) {
+                    let (i, d) = ics::import(&text);
+                    found.extend(i);
+                    dropped += d;
+                }
+                if found.is_empty() {
+                    bail!("this email has no calendar invitation");
+                }
+                let from = if row.from_name.is_empty() { row.from_addr.clone() } else { row.from_name.clone() };
+                json!(self.import_items(found, dropped, Some((row.account_id, header_id, row.subject.clone(), from)))?)
             }
             // Items already made from this email.
             "items.for_message" => {
@@ -310,6 +348,32 @@ impl Engine {
     }
 
     // ---- messages -------------------------------------------------------
+
+    /// Saves imported items, skipping any the list already has.
+    fn import_items(&self, found: Vec<Item>, dropped: usize, source: Option<(i64, String, String, String)>) -> Result<Value> {
+        let store = &self.inner.store;
+        let existing = store.with_db(items::list)?;
+        let (mut added, mut skipped) = (0, 0);
+        for mut item in found {
+            if let Some((account, message_id, subject, from)) = &source {
+                item.source_account_id = Some(*account);
+                item.source_message_id = message_id.clone();
+                item.source_subject = subject.clone();
+                item.source_from = from.clone();
+            }
+            let item = item.normalise();
+            if existing.iter().any(|e| ics::same(e, &item)) {
+                skipped += 1;
+                continue;
+            }
+            store.with_db(|db| items::save(db, item))?;
+            added += 1;
+        }
+        if added > 0 {
+            self.inner.emit(json!({ "type": "items_changed" }));
+        }
+        Ok(json!({ "added": added, "skipped": skipped, "repeats_dropped": dropped }))
+    }
 
     fn get_message(&self, p: &Value) -> Result<Value> {
         let store = &self.inner.store;

@@ -373,6 +373,7 @@ impl Inner {
             Some(id) => self.store.threading(id)?.map(|(mid, refs, _)| (mid, refs)),
             None => None,
         };
+        smtp::check_sender(&acc, &self.store.aliases(acc.id)?, &draft)?;
         let msg = smtp::build(&acc, &draft, threading)?;
         let raw = msg.formatted();
         let cred = self.credential(&acc).await?;

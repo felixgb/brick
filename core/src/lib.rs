@@ -7,6 +7,7 @@
 pub mod claude;
 pub mod engine;
 pub mod ffi;
+pub mod ics;
 pub mod imap;
 pub mod items;
 pub mod mime;

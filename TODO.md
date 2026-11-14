@@ -29,25 +29,25 @@ longer working list. Items are roughly ordered by priority within each section.
 - [ ] Sending attachments
 - [ ] Drafts saved to the server
 - [ ] Fastmail over JMAP
-- [ ] Decode IMAP modified UTF-7 folder names
+- [x] Decode IMAP modified UTF-7 folder names (engine; tested)
 - [ ] Use CONDSTORE for flag reconciliation instead of re-reading the newest 2,000 UIDs
-- [ ] Multiple identities / aliases per account
-- [ ] Signatures
-- [ ] Undo for archive, trash and move
-- [ ] Keyboard shortcuts for triage (archive, trash, next/previous, mark read)
+- [x] Multiple identities / aliases per account (engine + Linux; macOS UI not done)
+- [x] Signatures (Linux; macOS UI not done)
+- [ ] Undo for archive, trash and move. Needs an engine change first: `messages.move` deletes the local row at once and the message only reappears after the next sync, so there is nothing to move back
+- [x] Keyboard shortcuts for triage (Linux: A, Delete, M, S, J, K; macOS not done)
 - [ ] Notifications for new mail
-- [ ] Unified inbox across accounts
+- [x] Unified inbox across accounts (engine + Linux; macOS UI not done)
 
 ## To-do and calendar
 
-- [ ] Week and day views
-- [ ] Edit the end date of a multi-day item
-- [ ] Recurring items
+- [x] Week and day views (Linux; macOS not done)
+- [x] Edit the end date of a multi-day item (Linux; macOS not done)
+- [x] Recurring items: daily/weekly/monthly/yearly with an optional end (engine + Linux; macOS not done)
 - [ ] Reminders
 - [ ] Calendar sync (CalDAV, Google, Outlook)
 - [ ] Sync items between machines
-- [ ] Import and export `.ics`
-- [ ] Open invitations in email as items
+- [x] Import and export `.ics` (engine + Linux; macOS not done)
+- [x] Open invitations in email as items (engine + Linux; macOS not done)
 - [x] To-do and Calendar tabs in the Linux app
 
 ## Claude extraction
@@ -57,13 +57,23 @@ longer working list. Items are roughly ordered by priority within each section.
 - [ ] Rate-limit and error handling for API failures
 - [ ] Consider extracting from several selected emails at once
 
+## macOS follow-ups for what the engine and Linux app now do
+
+The engine changes are in and tested, but the macOS front end has not been touched (it can't be built here):
+
+- [ ] Repeat, end-day and until controls in the item editor. Until then, editing a repeating item on macOS drops its repeat, because the macOS payload doesn't carry the field
+- [ ] Week and day views, `.ics` import and export, and the invitation button
+- [ ] Signatures, aliases and a unified inbox entry
+
 ## Linux app
 
 - [ ] Try it on a real desktop and a real mail account (so far only run headless against stand-in servers)
-- [ ] Week and day calendar views (done for neither app)
+- [x] Week and day calendar views
 - [ ] Calendar: switch month when clicking a faded day from the next or previous month
 - [ ] Extraction review dialog is tall with three proposals; make the cards more compact
 - [ ] Keyboard-only use of the calendar day panel (Tab from the grid)
+- [ ] Week view: a narrow overlapping block can lose its title; show the full text in a tooltip
+- [ ] Invitations are also listed as an attachment named "attachment" in the reader
 
 - [ ] Packaging (AppImage or Flatpak) and install of `brick.desktop`
 - [x] Decide how to run and inspect it for debugging: offscreen platform plus a debug socket (`linux/tools/`)

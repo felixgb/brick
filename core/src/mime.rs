@@ -99,6 +99,7 @@ pub fn render(raw: &[u8], allow_remote: bool) -> Body {
             text: String::new(),
             attachments: vec![],
             blocked_remote: false,
+            invitation: false,
         };
     };
 
@@ -145,6 +146,7 @@ pub fn render(raw: &[u8], allow_remote: bool) -> Body {
         text,
         attachments,
         blocked_remote: blocked.load(Ordering::Relaxed),
+        invitation: !invitations(raw).is_empty(),
     }
 }
 
@@ -191,6 +193,24 @@ fn sanitise(html: &str, cids: Arc<HashMap<String, String>>, allow_remote: bool, 
         }
     });
     b.clean(html).to_string()
+}
+
+/// The text of every calendar invitation in a message: text/calendar parts,
+/// whether inline or attached, and attachments named *.ics.
+pub fn invitations(raw: &[u8]) -> Vec<String> {
+    let Some(msg) = MessageParser::default().parse(raw) else { return vec![] };
+    msg.parts
+        .iter()
+        .filter(|p| {
+            let calendar = p
+                .content_type()
+                .is_some_and(|ct| ct.c_type.eq_ignore_ascii_case("text") && ct.subtype().is_some_and(|s| s.eq_ignore_ascii_case("calendar")));
+            let named = p.attachment_name().is_some_and(|n| n.to_ascii_lowercase().ends_with(".ics"));
+            calendar || named
+        })
+        .map(|p| String::from_utf8_lossy(p.contents()).into_owned())
+        .filter(|t| t.contains("BEGIN:VCALENDAR"))
+        .collect()
 }
 
 /// Returns (file name, bytes) for the attachment at `index`.
@@ -259,5 +279,26 @@ Content-Type: text/html; charset=utf-8\r\n\r\n\
         let s = summarise(raw);
         assert!(s.snippet.contains("& more"));
         assert!(!s.has_attachments);
+    }
+
+    #[test]
+    fn finds_invitations_inline_and_attached() {
+        let ics = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nSUMMARY:Review\r\nDTSTART:20261201T100000\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let inline = format!(
+            "From: a@example.com\r\nSubject: Invite\r\nMIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary=b\r\n\r\n\
+--b\r\nContent-Type: text/plain\r\n\r\nJoin us\r\n--b\r\nContent-Type: text/calendar; method=REQUEST\r\n\r\n{ics}--b--\r\n"
+        );
+        assert_eq!(invitations(inline.as_bytes()).len(), 1);
+        assert!(render(inline.as_bytes(), false).invitation);
+
+        let attached = format!(
+            "From: a@example.com\r\nSubject: Invite\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n\
+--b\r\nContent-Type: text/plain\r\n\r\nSee attached\r\n--b\r\nContent-Type: application/octet-stream; name=\"invite.ics\"\r\n\
+Content-Disposition: attachment; filename=\"invite.ics\"\r\n\r\n{ics}--b--\r\n"
+        );
+        assert_eq!(invitations(attached.as_bytes()).len(), 1);
+
+        assert!(invitations(HTML_MAIL.as_bytes()).is_empty());
+        assert!(!render(HTML_MAIL.as_bytes(), false).invitation);
     }
 }

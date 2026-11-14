@@ -135,4 +135,7 @@ pub struct Body {
     pub attachments: Vec<Attachment>,
     /// True when remote images were present and stripped.
     pub blocked_remote: bool,
+    /// True when the message carries a calendar invitation (see `items.import_invitation`).
+    #[serde(default)]
+    pub invitation: bool,
 }

@@ -37,6 +37,8 @@ QString detailOf(const Item &item, bool showsDay) {
     }
     if (!item.location.isEmpty())
         parts << item.location;
+    if (!item.repeat.isEmpty())
+        parts << item.repeatLabel();
     return parts.join(QStringLiteral(" · "));
 }
 

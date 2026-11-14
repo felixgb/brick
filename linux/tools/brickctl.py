@@ -12,6 +12,7 @@ run-headless.sh does that. Examples:
     brickctl.py click monthGrid --pos 300,200 --double
     brickctl.py key Return                # press a key in the focused widget
     brickctl.py type 'Buy milk'
+    brickctl.py action 'Next message'     # trigger a menu/toolbar action by its text
     brickctl.py call items.list           # a raw engine request
     brickctl.py script steps.txt          # many commands, one per line
 
@@ -101,6 +102,8 @@ def parse(argv):
         return o
     if cmd == "invoke":
         return {"cmd": "invoke", "target": rest[0], "method": rest[1]}
+    if cmd == "action":
+        return {"cmd": "action", "text": rest[0]}
     if cmd == "key":
         o = {"cmd": "key", "key": rest[0]}
         if len(rest) > 1 and not rest[1].startswith("--"):
@@ -164,7 +167,7 @@ def main():
             cmd = parse(words)
             if not show(cmd, send(sock, cmd)):
                 status = 1
-            if cmd["cmd"] in ("click", "key", "type", "invoke"):
+            if cmd["cmd"] in ("click", "key", "type", "invoke", "action"):
                 time.sleep(0.12)  # let the queued input land
         return status
     cmd = parse(argv)

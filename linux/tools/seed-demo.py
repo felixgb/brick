@@ -18,11 +18,17 @@ db.execute(
     " smtp_host, smtp_port, smtp_security) VALUES (1, 'sam@example.com', 'Sam Rivers', 'custom', 'password',"
     " 'sam@example.com', '127.0.0.1', 1, 'tls', '127.0.0.1', 1, 'tls')"
 )
-folders = [(1, "INBOX", "Inbox", "inbox"), (2, "Sent", "Sent", "sent"), (3, "Archive", "Archive", "archive"),
-           (4, "Trash", "Trash", "trash"), (5, "Junk", "Junk", "junk")]
-for fid, path, name, role in folders:
-    db.execute("INSERT INTO folders (id, account_id, path, name, role, selectable, backfill_uid) VALUES (?,1,?,?,?,1,1)",
-               (fid, path, name, role))
+db.execute(
+    "INSERT INTO accounts (id, email, name, provider, auth, username, imap_host, imap_port, imap_security,"
+    " smtp_host, smtp_port, smtp_security) VALUES (2, 'sam@work.example', 'Sam Rivers', 'custom', 'password',"
+    " 'sam@work.example', '127.0.0.1', 1, 'tls', '127.0.0.1', 1, 'tls')"
+)
+folders = [(1, 1, "INBOX", "Inbox", "inbox"), (2, 1, "Sent", "Sent", "sent"), (3, 1, "Archive", "Archive", "archive"),
+           (4, 1, "Trash", "Trash", "trash"), (5, 1, "Junk", "Junk", "junk"),
+           (6, 2, "INBOX", "Inbox", "inbox"), (7, 2, "Sent", "Sent", "sent")]
+for fid, acc, path, name, role in folders:
+    db.execute("INSERT INTO folders (id, account_id, path, name, role, selectable, backfill_uid) VALUES (?,?,?,?,?,1,1)",
+               (fid, acc, path, name, role))
 
 mails = [
     ("Priya Nair", "priya@harbourworks.example", "Dentist moved to Thursday 15:30",
@@ -54,7 +60,45 @@ for i, (name, addr, subject, text, ago, seen, flagged) in enumerate(mails, start
     db.execute("INSERT INTO bodies (message_id, raw) VALUES (?,?)", (i, raw))
     db.execute("INSERT INTO messages_fts (rowid, subject, sender, recipients, body) VALUES (?,?,?,?,?)",
                (i, subject, f"{name} {addr}", "sam@example.com", text))
-unread = sum(1 for m in mails if not m[5])
-db.execute("UPDATE folders SET unread=?, total=? WHERE id=1", (unread, len(mails)))
+import datetime as dt
+
+# A calendar invitation, in the first account's inbox.
+wed = dt.date.today() + dt.timedelta(days=5)
+ics = ("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\nUID:inv1@fieldnotes\r\n"
+       "SUMMARY:Venue walk-through\r\nLOCATION:The Old Granary\r\n"
+       f"DTSTART:{wed:%Y%m%d}T140000\r\nDTEND:{wed:%Y%m%d}T150000\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n")
+raw = (
+    "From: Ana Kowalski <ana@fieldnotes.example>\r\nTo: Sam Rivers <sam@example.com>\r\n"
+    "Subject: Invitation: Venue walk-through\r\nMessage-ID: <demo-invite@example>\r\nMIME-Version: 1.0\r\n"
+    "Content-Type: multipart/alternative; boundary=b1\r\n\r\n--b1\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n"
+    "Ana has invited you to a walk-through of the venue.\r\n--b1\r\nContent-Type: text/calendar; method=REQUEST\r\n\r\n"
+    + ics + "--b1--\r\n").encode()
+db.execute(
+    "INSERT INTO messages (id, account_id, folder_id, uid, message_id, subject, from_name, from_addr, to_text,"
+    " date, size, seen, flagged, snippet) VALUES (8,1,1,8,'<demo-invite@example>','Invitation: Venue walk-through',"
+    "'Ana Kowalski','ana@fieldnotes.example','Sam Rivers <sam@example.com>',?,?,0,0,'Ana has invited you to a walk-through of the venue.')",
+    (now - 2 * hour, len(raw)))
+db.execute("INSERT INTO bodies (message_id, raw) VALUES (8,?)", (raw,))
+db.execute("INSERT INTO messages_fts (rowid, subject, sender, recipients, body) VALUES (8,'Invitation: Venue walk-through','Ana Kowalski','sam@example.com','walk-through of the venue')")
+
+# A second account, so there is a unified inbox.
+work = [
+    (6, "Dev Patel", "dev@work.example", "Quarterly numbers are in", "The numbers are in the shared folder.", 30 * 60, 0),
+    (7, "IT Helpdesk", "it@work.example", "Password expiry notice", "Your password expires in 7 days.", 5 * hour, 1),
+]
+for mid, name, addr, subject, text, ago, seen in work:
+    raw = (f"From: {name} <{addr}>\r\nTo: sam@work.example\r\nSubject: {subject}\r\nMessage-ID: <demo{mid}@work>\r\n"
+           f"Content-Type: text/plain; charset=utf-8\r\n\r\n{text}\r\n").encode()
+    db.execute(
+        "INSERT INTO messages (id, account_id, folder_id, uid, message_id, subject, from_name, from_addr, to_text,"
+        " date, size, seen, flagged, snippet) VALUES (?,2,6,?,?,?,?,?,'sam@work.example',?,?,?,0,?)",
+        (mid, mid, f"<demo{mid}@work>", subject, name, addr, now - ago, len(raw), seen, text))
+    db.execute("INSERT INTO bodies (message_id, raw) VALUES (?,?)", (mid, raw))
+    db.execute("INSERT INTO messages_fts (rowid, subject, sender, recipients, body) VALUES (?,?,?,?,?)",
+               (mid, subject, f"{name} {addr}", "sam@work.example", text))
+db.execute("UPDATE folders SET unread=1, total=2 WHERE id=6")
+
+unread = sum(1 for m in mails if not m[5]) + 1
+db.execute("UPDATE folders SET unread=?, total=? WHERE id=1", (unread, len(mails) + 1))
 db.commit()
 print(f"seeded {len(mails)} messages")

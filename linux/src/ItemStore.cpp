@@ -39,18 +39,53 @@ QString ItemStore::save(const Item &item) {
 }
 
 void ItemStore::setDone(const Item &item, bool done) {
-    // Show the tick at once; the engine confirms with items_changed.
-    for (Item &i : m_items) {
-        if (i.id == item.id)
-            i.done = done;
+    // Show the tick at once; the engine confirms with items_changed. A
+    // repeating item doesn't stay ticked: the engine moves it to its next
+    // occurrence, so wait for that instead.
+    if (item.repeat.isEmpty()) {
+        for (Item &i : m_items) {
+            if (i.id == item.id)
+                i.done = done;
+        }
+        emit changed();
     }
-    emit changed();
     QString error;
     m_core->call("items.set_done", {{"id", double(item.id)}, {"done", done}}, &error);
     if (!error.isEmpty()) {
         reload();
         emit problem(error);
+    } else if (!item.repeat.isEmpty()) {
+        reload();
     }
+}
+
+static ItemStore::ImportResult resultOf(const QJsonValue &v, const QString &error) {
+    ItemStore::ImportResult r;
+    r.error = error;
+    const QJsonObject o = v.toObject();
+    r.added = o.value("added").toInt();
+    r.skipped = o.value("skipped").toInt();
+    r.repeatsDropped = o.value("repeats_dropped").toInt();
+    return r;
+}
+
+QString ItemStore::exportIcs(QString *error) const {
+    const QJsonValue v = m_core->call("items.export_ics", {}, error);
+    return v.toString();
+}
+
+ItemStore::ImportResult ItemStore::importIcs(const QString &text) {
+    QString error;
+    const QJsonValue v = m_core->call("items.import_ics", {{"text", text}}, &error);
+    reload();
+    return resultOf(v, error);
+}
+
+ItemStore::ImportResult ItemStore::importInvitation(qint64 messageId) {
+    QString error;
+    const QJsonValue v = m_core->call("items.import_invitation", {{"id", double(messageId)}}, &error);
+    reload();
+    return resultOf(v, error);
 }
 
 void ItemStore::remove(const Item &item) {

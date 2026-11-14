@@ -13,6 +13,16 @@ MessageModel::MessageModel(Core *core, QObject *parent) : QAbstractTableModel(pa
 void MessageModel::showFolder(qint64 folderId) {
     beginResetModel();
     m_folderId = folderId;
+    m_role.clear();
+    m_query.clear();
+    load();
+    endResetModel();
+}
+
+void MessageModel::showRole(const QString &role) {
+    beginResetModel();
+    m_folderId = 0;
+    m_role = role;
     m_query.clear();
     load();
     endResetModel();
@@ -45,26 +55,28 @@ void MessageModel::load() {
                 chunk.append(rows.at(j));
             m_pages.insert(i / PageSize, chunk);
         }
-    } else if (m_folderId != 0) {
-        const QJsonObject r =
-            m_core->call("messages.list", {{"folder_id", m_folderId}, {"offset", 0}, {"limit", PageSize}}).toObject();
+    } else if (listsMessages()) {
+        const QJsonObject r = m_core->call("messages.list", listParams(0)).toObject();
         m_total = r.value("total").toInt();
         m_pages.insert(0, r.value("rows").toArray());
     }
+}
+
+QJsonObject MessageModel::listParams(int offset) const {
+    QJsonObject p{{"offset", offset}, {"limit", PageSize}};
+    if (!m_role.isEmpty())
+        p.insert("role", m_role);
+    else
+        p.insert("folder_id", double(m_folderId));
+    return p;
 }
 
 const QJsonArray &MessageModel::page(int pageIndex) const {
     auto it = m_pages.constFind(pageIndex);
     if (it == m_pages.constEnd()) {
         QJsonArray rows;
-        if (m_query.isEmpty() && m_folderId != 0) {
-            rows = m_core
-                       ->call("messages.list",
-                              {{"folder_id", m_folderId}, {"offset", pageIndex * PageSize}, {"limit", PageSize}})
-                       .toObject()
-                       .value("rows")
-                       .toArray();
-        }
+        if (m_query.isEmpty() && listsMessages())
+            rows = m_core->call("messages.list", listParams(pageIndex * PageSize)).toObject().value("rows").toArray();
         it = m_pages.insert(pageIndex, rows);
     }
     return it.value();

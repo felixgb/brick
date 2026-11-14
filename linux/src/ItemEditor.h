@@ -6,6 +6,7 @@
 
 class ItemStore;
 class QCheckBox;
+class QComboBox;
 class QDateEdit;
 class QLabel;
 class QLineEdit;
@@ -33,6 +34,11 @@ private:
     QLineEdit *m_title;
     QCheckBox *m_hasDay;
     QDateEdit *m_day;
+    QCheckBox *m_hasEndDay;
+    QDateEdit *m_endDay;
+    QComboBox *m_repeat;
+    QCheckBox *m_hasUntil;
+    QDateEdit *m_until;
     QCheckBox *m_hasStart;
     QTimeEdit *m_start;
     QCheckBox *m_hasEnd;

@@ -59,14 +59,19 @@ private:
     QList<qint64> selectedIds() const;
     QJsonObject currentMessage() const;
     qint64 currentAccountId() const;
-    void addAccount();
+    Q_INVOKABLE void addAccount();
     void removeAccount();
-    void newItem(const QString &day = QString());
+    void newItem(const QString &day = QString(), const QString &time = QString());
+    Q_INVOKABLE void importCalendar();
+    Q_INVOKABLE void exportCalendar();
+    void addInvitation();
+    void moveCurrent(int delta);
+    Q_INVOKABLE void accountOptions();
     void editItem(const Item &item);
     void openSource(const Item &item);
     void extractItems();
     void showLinkedItems();
-    void claudeSettings();
+    Q_INVOKABLE void claudeSettings();
 
     Core *m_core;
     MessageModel *m_model;
@@ -82,6 +87,9 @@ private:
     QLabel *m_statusLabel;
     QTimer *m_refreshTimer;
     QLabel *m_linked;
+    QWidget *m_inviteBar;
+    QAction *m_nextAct;
+    QAction *m_prevAct;
 
     ItemStore *m_items;
     QStackedWidget *m_stack;

@@ -138,6 +138,42 @@ fn role_for(path: &str, attrs: &str) -> &'static str {
     }
 }
 
+/// Decodes an IMAP folder name from modified UTF-7 (RFC 3501 section 5.1.3), so
+/// "Entw&APw-rfe" reads as "Entwürfe". Anything malformed is returned as it came.
+pub fn decode_modified_utf7(s: &str) -> String {
+    use base64::Engine as _;
+    if !s.contains('&') {
+        return s.to_string();
+    }
+    let mut out = String::new();
+    let mut rest = s;
+    while let Some(start) = rest.find('&') {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        let Some(end) = after.find('-') else { return s.to_string() };
+        let encoded = &after[..end];
+        if encoded.is_empty() {
+            out.push('&'); // "&-" is a literal ampersand
+        } else {
+            let standard = encoded.replace(',', "/");
+            let Ok(bytes) = base64::engine::general_purpose::STANDARD_NO_PAD.decode(standard) else {
+                return s.to_string();
+            };
+            if bytes.len() % 2 != 0 {
+                return s.to_string();
+            }
+            let units: Vec<u16> = bytes.chunks(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
+            match String::from_utf16(&units) {
+                Ok(text) => out.push_str(&text),
+                Err(_) => return s.to_string(),
+            }
+        }
+        rest = &after[end + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
 pub async fn list_folders(s: &mut Session) -> Result<Vec<RemoteFolder>> {
     let names: Vec<_> = s.list(Some(""), Some("*")).await?.try_collect().await?;
     let mut out = Vec::new();
@@ -150,7 +186,7 @@ pub async fn list_folders(s: &mut Session) -> Result<Vec<RemoteFolder>> {
             _ => path.clone(),
         };
         let role = role_for(&path, &attrs).to_string();
-        let name = if role == "inbox" { "Inbox".to_string() } else { name };
+        let name = if role == "inbox" { "Inbox".to_string() } else { decode_modified_utf7(&name) };
         out.push(RemoteFolder { path, name, role, selectable });
     }
     Ok(out)
@@ -257,4 +293,20 @@ pub async fn delete_forever(s: &mut Session, uid: u32) -> Result<()> {
 pub async fn append(s: &mut Session, folder: &str, raw: &[u8]) -> Result<()> {
     s.append(folder, Some("(\\Seen)"), None, raw).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn folder_names_decode_from_modified_utf7() {
+        assert_eq!(decode_modified_utf7("Inbox"), "Inbox");
+        assert_eq!(decode_modified_utf7("Entw&APw-rfe"), "Entwürfe");
+        assert_eq!(decode_modified_utf7("~peter/mail/&ZeVnLIqe-/&U,BTFw-"), "~peter/mail/日本語/台北");
+        assert_eq!(decode_modified_utf7("Sent &- Items"), "Sent & Items");
+        assert_eq!(decode_modified_utf7("&Jjo-"), "☺");
+        assert_eq!(decode_modified_utf7("Broken &AB"), "Broken &AB", "unterminated: left alone");
+        assert_eq!(decode_modified_utf7("Bad &!!!!-"), "Bad &!!!!-", "bad base64: left alone");
+    }
 }

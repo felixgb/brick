@@ -29,6 +29,7 @@ add_executable(brick
   src/MainWindow.cpp   src/MainWindow.h
   src/ComposeWindow.cpp src/ComposeWindow.h
   src/AccountDialog.cpp src/AccountDialog.h
+  src/AccountOptionsDialog.cpp src/AccountOptionsDialog.h
   src/Item.cpp         src/Item.h
   src/ItemStore.cpp    src/ItemStore.h
   src/ItemList.cpp     src/ItemList.h

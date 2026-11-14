@@ -1,6 +1,7 @@
 #include "ItemEditor.h"
 
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDateEdit>
 #include <QDialogButtonBox>
 #include <QFormLayout>
@@ -27,6 +28,15 @@ ItemFields::ItemFields(const Item &item, QWidget *parent) : QWidget(parent), m_b
     m_day->setCalendarPopup(true);
     m_day->setDisplayFormat(QStringLiteral("ddd d MMM yyyy"));
 
+    m_hasEndDay = new QCheckBox(tr("Ends on another day"));
+    m_hasEndDay->setObjectName("itemHasEndDay");
+    m_hasEndDay->setChecked(Day::date(item.endDate).isValid());
+    m_endDay = new QDateEdit(Day::date(item.endDate).isValid() ? Day::date(item.endDate)
+                                                                  : m_day->date().addDays(1));
+    m_endDay->setObjectName("itemEndDay");
+    m_endDay->setCalendarPopup(true);
+    m_endDay->setDisplayFormat(QStringLiteral("ddd d MMM yyyy"));
+
     m_hasStart = new QCheckBox(tr("At a time"));
     m_hasStart->setObjectName("itemHasStart");
     m_hasStart->setChecked(!item.startTime.isEmpty());
@@ -43,6 +53,23 @@ ItemFields::ItemFields(const Item &item, QWidget *parent) : QWidget(parent), m_b
                               : m_start->time().addSecs(3600));
     m_end->setDisplayFormat(QStringLiteral("HH:mm"));
 
+    m_repeat = new QComboBox;
+    m_repeat->setObjectName("itemRepeat");
+    m_repeat->addItem(tr("Never"), QString());
+    m_repeat->addItem(tr("Every day"), QStringLiteral("daily"));
+    m_repeat->addItem(tr("Every week"), QStringLiteral("weekly"));
+    m_repeat->addItem(tr("Every month"), QStringLiteral("monthly"));
+    m_repeat->addItem(tr("Every year"), QStringLiteral("yearly"));
+    m_repeat->setCurrentIndex(qMax(0, m_repeat->findData(item.repeat)));
+    m_hasUntil = new QCheckBox(tr("Until"));
+    m_hasUntil->setObjectName("itemHasUntil");
+    m_hasUntil->setChecked(Day::date(item.repeatUntil).isValid());
+    m_until = new QDateEdit(Day::date(item.repeatUntil).isValid() ? Day::date(item.repeatUntil)
+                                                                     : m_day->date().addYears(1));
+    m_until->setObjectName("itemUntil");
+    m_until->setCalendarPopup(true);
+    m_until->setDisplayFormat(QStringLiteral("ddd d MMM yyyy"));
+
     m_location = new QLineEdit(item.location);
     m_notes = new QPlainTextEdit(item.notes);
     m_notes->setTabChangesFocus(true);
@@ -54,14 +81,27 @@ ItemFields::ItemFields(const Item &item, QWidget *parent) : QWidget(parent), m_b
     form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     form->addRow(tr("Title"), m_title);
     form->addRow(m_hasDay, m_day);
+    form->addRow(m_hasEndDay, m_endDay);
     form->addRow(m_hasStart, m_start);
     form->addRow(m_hasEnd, m_end);
+    form->addRow(tr("Repeat"), m_repeat);
+    form->addRow(m_hasUntil, m_until);
     form->addRow(tr("Location"), m_location);
     form->addRow(tr("Notes"), m_notes);
 
     // Starting a span later than it ends makes no sense; an end time only
     // makes sense with a start time, and a start time with a day.
     connect(m_hasDay, &QCheckBox::toggled, this, &ItemFields::syncEnabled);
+    connect(m_hasEndDay, &QCheckBox::toggled, this, &ItemFields::syncEnabled);
+    connect(m_hasUntil, &QCheckBox::toggled, this, &ItemFields::syncEnabled);
+    connect(m_repeat, qOverload<int>(&QComboBox::currentIndexChanged), this, &ItemFields::syncEnabled);
+    // The end can't come before the start; moving the start drags a too-early end along.
+    connect(m_day, &QDateEdit::dateChanged, this, [this](const QDate &d) {
+        if (m_endDay->date() <= d)
+            m_endDay->setDate(d.addDays(1));
+        if (m_until->date() < d)
+            m_until->setDate(d);
+    });
     connect(m_hasStart, &QCheckBox::toggled, this, &ItemFields::syncEnabled);
     connect(m_hasEnd, &QCheckBox::toggled, this, [this](bool on) {
         if (on)
@@ -76,6 +116,11 @@ void ItemFields::syncEnabled() {
     const bool day = m_hasDay->isChecked();
     const bool start = day && m_hasStart->isChecked();
     m_day->setEnabled(day);
+    m_hasEndDay->setEnabled(day);
+    m_endDay->setEnabled(day && m_hasEndDay->isChecked());
+    m_repeat->setEnabled(day);
+    m_hasUntil->setEnabled(day && !m_repeat->currentData().toString().isEmpty());
+    m_until->setEnabled(m_hasUntil->isEnabled() && m_hasUntil->isChecked());
     m_hasStart->setEnabled(day);
     m_start->setEnabled(start);
     m_hasEnd->setEnabled(start);
@@ -97,12 +142,15 @@ Item ItemFields::item() const {
         i.endDate.clear();
         i.startTime.clear();
         i.endTime.clear();
+        i.repeat.clear();
+        i.repeatUntil.clear();
         return i;
     }
     i.date = Day::string(m_day->date());
-    // A span that would now end before it starts no longer makes sense.
-    if (!i.endDate.isEmpty() && i.endDate <= i.date)
-        i.endDate.clear();
+    // A span that would end before it starts makes no sense.
+    i.endDate = m_hasEndDay->isChecked() && m_endDay->date() > m_day->date() ? Day::string(m_endDay->date()) : QString();
+    i.repeat = m_repeat->currentData().toString();
+    i.repeatUntil = !i.repeat.isEmpty() && m_hasUntil->isChecked() ? Day::string(m_until->date()) : QString();
     if (!m_hasStart->isChecked()) {
         i.startTime.clear();
         i.endTime.clear();

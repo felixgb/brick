@@ -79,3 +79,30 @@ fn items_round_trip_through_the_engine() {
     // Extracting from a message that doesn't exist fails straight away.
     assert!(raw(&e, "items.extract", json!({ "id": 999, "token": "t" })).get("error").is_some());
 }
+
+#[test]
+fn calendar_files_import_and_export_through_the_engine() {
+    let dir = tempfile::tempdir().unwrap();
+    let emit = Arc::new(|_: String| {});
+    let e = Engine::open_with(dir.path(), Arc::new(MemoryStore::default()), emit).unwrap();
+
+    call(&e, "items.save", json!({ "item": { "title": "Standup", "date": "2026-12-01", "start_time": "09:30",
+                                              "repeat": "daily", "repeat_until": "2026-12-31" } }));
+    call(&e, "items.save", json!({ "item": { "title": "Buy stamps" } }));
+    let text = call(&e, "items.export_ics", json!({}));
+    let text = text.as_str().unwrap().to_string();
+    assert!(text.contains("RRULE:FREQ=DAILY;UNTIL=20261231"), "{text}");
+
+    // Importing what we just exported finds everything already there.
+    let again = call(&e, "items.import_ics", json!({ "text": text }));
+    assert_eq!((again["added"].as_i64(), again["skipped"].as_i64()), (Some(0), Some(2)));
+
+    // A foreign calendar adds new items, once.
+    let foreign = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:20261224\r\nDTEND;VALUE=DATE:20261227\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+    let first = call(&e, "items.import_ics", json!({ "text": foreign }));
+    assert_eq!(first["added"], 1);
+    assert_eq!(call(&e, "items.import_ics", json!({ "text": foreign }))["added"], 0);
+    let listed = call(&e, "items.list", json!({}));
+    assert_eq!(listed.as_array().unwrap().len(), 3);
+    assert_eq!(listed.as_array().unwrap().iter().find(|i| i["title"] == "Standup").unwrap()["repeat"], "daily");
+}

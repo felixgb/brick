@@ -18,12 +18,16 @@ public:
     explicit MessageModel(Core *core, QObject *parent = nullptr);
 
     void showFolder(qint64 folderId);
+    // Every folder with this role across accounts ("inbox" is the unified inbox).
+    void showRole(const QString &role);
     void showSearch(const QString &query);
     // Re-reads the current folder or search. The view's selection and scroll
     // position are reset; MainWindow restores them by message id.
     void refresh();
 
     qint64 folderId() const { return m_folderId; }
+    QString role() const { return m_role; }
+    bool isUnified() const { return m_query.isEmpty() && !m_role.isEmpty(); }
     bool isSearch() const { return !m_query.isEmpty(); }
     QJsonObject message(int row) const;
     int rowOfMessage(qint64 id) const;
@@ -38,11 +42,14 @@ public:
 private:
     static constexpr int PageSize = 200;
 
+    bool listsMessages() const { return m_folderId != 0 || !m_role.isEmpty(); }
+    QJsonObject listParams(int offset) const;
     void load();
     const QJsonArray &page(int pageIndex) const;
 
     Core *m_core;
     qint64 m_folderId = 0;
+    QString m_role;
     QString m_query;
     int m_total = 0;
     mutable QHash<int, QJsonArray> m_pages;
