@@ -97,11 +97,14 @@ struct CalendarView: View {
                     )
                     .frame(height: geometry.size.height / 6)
                     .contentShape(Rectangle())
-                    .onTapGesture(count: 2) {
-                        selectedDay = key
-                        model.newItem(on: key)
-                    }
+                    .equatable()
+                    // Select on the first click. A count: 2 onTapGesture placed
+                    // before a single-tap one makes SwiftUI wait out the
+                    // double-click interval before selecting, which felt laggy.
                     .onTapGesture { selectedDay = key }
+                    .simultaneousGesture(
+                        TapGesture(count: 2).onEnded { model.newItem(on: key) }
+                    )
                 }
             }
         }
@@ -146,7 +149,15 @@ struct CalendarView: View {
     }
 }
 
-private struct DayCell: View {
+private struct DayCell: View, Equatable {
+    // Only the selection changes on a click; Equatable lets SwiftUI skip the
+    // other 41 cells instead of re-formatting all of their dates.
+    private static let labelFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.setLocalizedDateFormatFromTemplate("EEEEdMMMM")
+        return f
+    }()
+
     let date: Date
     let items: [Item]
     let inMonth: Bool
@@ -157,7 +168,7 @@ private struct DayCell: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(date.formatted(.dateTime.day()))
+            Text(String(Calendar.current.component(.day, from: date)))
                 .font(.callout.weight(isToday ? .semibold : .regular))
                 .foregroundStyle(isToday ? Color.white : (inMonth ? Color.primary : Color.secondary.opacity(0.6)))
                 .frame(minWidth: 22, minHeight: 22)
@@ -193,6 +204,6 @@ private struct DayCell: View {
         .opacity(inMonth ? 1 : 0.75)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(
-            "\(date.formatted(.dateTime.weekday(.wide).day().month(.wide))), \(items.count) items")
+            "\(Self.labelFormatter.string(from: date)), \(items.count) items")
     }
 }

@@ -27,6 +27,8 @@ public:
     bool isSearch() const { return !m_query.isEmpty(); }
     QJsonObject message(int row) const;
     int rowOfMessage(qint64 id) const;
+    // Like rowOfMessage, but reads further pages until the message is found.
+    int ensureRow(qint64 id);
 
     int rowCount(const QModelIndex &parent = {}) const override;
     int columnCount(const QModelIndex &parent = {}) const override;

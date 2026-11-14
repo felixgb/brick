@@ -88,6 +88,15 @@ int MessageModel::rowOfMessage(qint64 id) const {
     return -1;
 }
 
+int MessageModel::ensureRow(qint64 id) {
+    int row = rowOfMessage(id);
+    for (int p = 0; row < 0 && p * PageSize < m_total; ++p) {
+        page(p);
+        row = rowOfMessage(id);
+    }
+    return row;
+}
+
 int MessageModel::rowCount(const QModelIndex &parent) const {
     return parent.isValid() ? 0 : m_total;
 }

@@ -20,8 +20,8 @@ background and reports back as an event.
 |---|---|
 | Engine | Builds. Unit tests pass, and an end-to-end test passes against a real IMAP/SMTP server. |
 | C interface | Builds and runs from a C program. |
-| Linux Qt app | Mail only. Written, **never compiled**: Qt 6 is not installed on the machine it was written on. |
-| macOS app | Mail builds and runs. The To-do and Calendar tabs and the Claude button are written but **not yet compiled**. |
+| Linux Qt app | Builds and runs with Qt 6.8.3. Mail, To-do, Calendar and the Claude button, all driven and checked through the debug hook (headless, against stand-in servers). Not yet tried on a real desktop or a real mail account. |
+| macOS app | Mail builds and runs. The To-do and Calendar tabs and the Claude button are written but **not yet compiled**. The calendar's slow day click was fixed in source, not yet confirmed on a Mac. |
 | Claude extraction | Tested against a stand-in server only; no request has been sent to the real API. |
 | Keychain storage | Compiles; not exercised (tests use the in-memory store). |
 | Gmail and Outlook sign-in | The OAuth flow is tested against a stand-in server, not against Google or Microsoft. |
@@ -68,7 +68,6 @@ retries it on another model.
 - Calendar week and day views; editing the end date of a multi-day item
 - Recurring items and reminders
 - Calendar sync (CalDAV, Google, Outlook)
-- To-do and calendar in the Linux app
 
 - Push (IMAP IDLE): mail is checked every two minutes and on demand
 - Conversation threading in the list
@@ -102,6 +101,24 @@ cmake -S linux -B linux/build -G Ninja -DCMAKE_PREFIX_PATH=$HOME/Qt/6.8.3/gcc_64
 cmake --build linux/build
 ./linux/build/brick
 ```
+
+#### Running and inspecting it without a display
+
+`linux/tools/` lets a script (or Claude) run the app headless and look inside it:
+
+```sh
+linux/tools/run-headless.sh start --seed   # offscreen, own data dir, demo mail
+linux/tools/seed-items.py                  # demo to-dos and calendar items
+linux/tools/brickctl.py tree               # outline of every visible widget
+linux/tools/brickctl.py set viewTabs index=2
+linux/tools/brickctl.py shot /tmp/calendar.png
+linux/tools/brickctl.py click monthGrid --pos 440,380 --double
+```
+
+The app opens a debug socket only when `BRICK_DEBUG_SOCKET` is set; see the
+header of [linux/src/DebugServer.h](linux/src/DebugServer.h) for the commands.
+`fake-claude.py` stands in for the Anthropic API (set
+`BRICK_ANTHROPIC_BASE_URL`) so Add to To-do can be tried without a key.
 
 Passwords and tokens are stored through the Secret Service, so a keyring daemon
 (gnome-keyring, KWallet, KeePassXC) must be running. To try the app without

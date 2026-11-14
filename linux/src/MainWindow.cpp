@@ -18,15 +18,24 @@
 #include <QScrollBar>
 #include <QSettings>
 #include <QSplitter>
+#include <QStackedWidget>
+#include <QTabBar>
+#include <QUuid>
 #include <QStatusBar>
 #include <QTimer>
 #include <QToolBar>
 #include <QTreeView>
 #include <QTreeWidget>
+#include <QTreeWidgetItemIterator>
 #include <QVBoxLayout>
 
 #include "AccountDialog.h"
+#include "CalendarView.h"
+#include "ClaudeDialogs.h"
 #include "Core.h"
+#include "ItemEditor.h"
+#include "ItemStore.h"
+#include "TodoView.h"
 #include "MessageModel.h"
 #include "MessageView.h"
 
@@ -38,7 +47,7 @@ qint64 jsonId(const QJsonValue &v) {
     return qint64(v.toDouble());
 }
 
-QString sender(const QJsonObject &m) {
+QString senderLabel(const QJsonObject &m) {
     const QString name = m.value("from_name").toString();
     const QString addr = m.value("from_addr").toString();
     return name.isEmpty() ? addr : QStringLiteral("%1 <%2>").arg(name, addr);
@@ -64,6 +73,7 @@ QIcon themed(const char *name) {
 MainWindow::MainWindow(Core *core, QWidget *parent) : QMainWindow(parent), m_core(core) {
     setWindowTitle(QStringLiteral("Brick"));
     m_model = new MessageModel(core, this);
+    m_items = new ItemStore(core, this);
 
     // Sync can report many changes in a burst; redraw the list once per burst.
     m_refreshTimer = new QTimer(this);
@@ -85,7 +95,7 @@ MainWindow::MainWindow(Core *core, QWidget *parent) : QMainWindow(parent), m_cor
 
     reloadFolders();
     updateActions();
-    if (m_core->call("accounts.list").toArray().isEmpty())
+    if (m_core->call("accounts.list").toArray().isEmpty() && qEnvironmentVariableIsEmpty("BRICK_DEBUG_SOCKET"))
         QTimer::singleShot(0, this, &MainWindow::addAccount);
 }
 
@@ -146,6 +156,17 @@ void MainWindow::buildActions() {
     m_syncAct = new QAction(themed("view-refresh"), tr("Check mail"), this);
     m_syncAct->setShortcut(QKeySequence::Refresh);
     connect(m_syncAct, &QAction::triggered, this, [this] { m_core->call("sync.now"); });
+
+    m_extractAct = new QAction(themed("view-task"), tr("Add to To-do"), this);
+    m_extractAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_T));
+    m_extractAct->setToolTip(tr("Ask Claude to find to-dos and events in this email"));
+    connect(m_extractAct, &QAction::triggered, this, &MainWindow::extractItems);
+
+    m_newItemAct = new QAction(themed("list-add"), tr("New item…"), this);
+    m_newItemAct->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_N));
+    connect(m_newItemAct, &QAction::triggered, this,
+            [this] { newItem(m_stack->currentIndex() == 2 ? Day::string(m_calendar->grid()->selected()) : QString()); });
+    addAction(m_newItemAct);
 }
 
 void MainWindow::buildUi() {
@@ -154,8 +175,11 @@ void MainWindow::buildUi() {
     file->addAction(m_newAct);
     file->addAction(m_syncAct);
     file->addSeparator();
+    file->addAction(m_newItemAct);
+    file->addSeparator();
     file->addAction(tr("Add account…"), this, &MainWindow::addAccount);
     file->addAction(tr("Remove account…"), this, &MainWindow::removeAccount);
+    file->addAction(tr("Claude settings…"), this, &MainWindow::claudeSettings);
     file->addSeparator();
     QAction *quit = file->addAction(tr("Quit"), this, &QWidget::close);
     quit->setShortcut(QKeySequence::Quit);
@@ -166,9 +190,32 @@ void MainWindow::buildUi() {
     message->addActions({m_archiveAct, m_deleteAct});
     message->addSeparator();
     message->addActions({m_readAct, m_starAct});
+    message->addSeparator();
+    message->addAction(m_extractAct);
 
-    // Toolbar
+    QMenu *viewMenu = menuBar()->addMenu(tr("&View"));
+    const QStringList viewNames{tr("Mail"), tr("To-do"), tr("Calendar")};
+    for (int i = 0; i < viewNames.size(); ++i) {
+        QAction *a = viewMenu->addAction(viewNames.at(i), this, [this, i] { m_tabs->setCurrentIndex(i); });
+        a->setShortcut(QKeySequence(Qt::CTRL | (Qt::Key_1 + i)));
+    }
+
+    // View switcher
+    QToolBar *viewBar = addToolBar(tr("View"));
+    viewBar->setObjectName("viewToolBar");
+    viewBar->setMovable(false);
+    m_tabs = new QTabBar;
+    m_tabs->setObjectName("viewTabs");
+    m_tabs->setDrawBase(false);
+    m_tabs->setExpanding(false);
+    m_tabs->setFocusPolicy(Qt::NoFocus);
+    for (const QString &name : viewNames)
+        m_tabs->addTab(name);
+    viewBar->addWidget(m_tabs);
+
+    // Mail toolbar
     QToolBar *bar = addToolBar(tr("Main"));
+    m_mailBar = bar;
     bar->setObjectName("mainToolBar");
     bar->setMovable(false);
     bar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
@@ -178,6 +225,8 @@ void MainWindow::buildUi() {
     bar->addActions({m_replyAct, m_replyAllAct, m_forwardAct});
     bar->addSeparator();
     bar->addActions({m_archiveAct, m_deleteAct});
+    bar->addSeparator();
+    bar->addAction(m_extractAct);
 
     auto *spacer = new QWidget;
     spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
@@ -267,6 +316,13 @@ void MainWindow::buildUi() {
     headerLayout->addWidget(m_subject);
     headerLayout->addWidget(m_meta);
     headerLayout->addWidget(m_remoteBar);
+    m_linked = new QLabel;
+    m_linked->setObjectName("linkedItems");
+    m_linked->setWordWrap(true);
+    m_linked->setTextFormat(Qt::PlainText);
+    m_linked->setEnabled(false);
+    m_linked->hide();
+    headerLayout->addWidget(m_linked);
 
     m_reader = new QWidget;
     auto *readerLayout = new QVBoxLayout(m_reader);
@@ -290,7 +346,25 @@ void MainWindow::buildUi() {
     mainSplit->setStretchFactor(0, 0);
     mainSplit->setStretchFactor(1, 1);
     mainSplit->setSizes({220, 900});
-    setCentralWidget(mainSplit);
+
+    m_todo = new TodoView(m_items);
+    m_calendar = new CalendarView(m_items);
+    m_stack = new QStackedWidget;
+    m_stack->setObjectName("viewStack");
+    m_stack->addWidget(mainSplit);
+    m_stack->addWidget(m_todo);
+    m_stack->addWidget(m_calendar);
+    setCentralWidget(m_stack);
+
+    connect(m_tabs, &QTabBar::currentChanged, this, &MainWindow::setView);
+    connect(m_todo, &TodoView::newItemRequested, this, [this] { newItem(); });
+    connect(m_todo, &TodoView::editRequested, this, &MainWindow::editItem);
+    connect(m_todo, &TodoView::openEmailRequested, this, &MainWindow::openSource);
+    connect(m_calendar, &CalendarView::newItemRequested, this, &MainWindow::newItem);
+    connect(m_calendar, &CalendarView::editRequested, this, &MainWindow::editItem);
+    connect(m_calendar, &CalendarView::openEmailRequested, this, &MainWindow::openSource);
+    connect(m_items, &ItemStore::changed, this, &MainWindow::showLinkedItems);
+    connect(m_items, &ItemStore::problem, this, [this](const QString &m) { statusBar()->showMessage(m, 8000); });
 
     m_statusLabel = new QLabel;
     statusBar()->addWidget(m_statusLabel, 1);
@@ -454,11 +528,12 @@ void MainWindow::showMessage(qint64 id, bool allowRemote) {
     m_shownId = id;
     m_shownAllowRemote = allowRemote;
     m_shownCc = r.value("cc").toString();
+    showLinkedItems();
 
     const QString subject = m.value("subject").toString();
     m_subject->setText(subject.isEmpty() ? tr("(no subject)") : subject);
     const QDateTime when = QDateTime::fromSecsSinceEpoch(qint64(m.value("date").toDouble()));
-    QString meta = tr("From: %1\nTo: %2").arg(sender(m), m.value("to").toString());
+    QString meta = tr("From: %1\nTo: %2").arg(senderLabel(m), m.value("to").toString());
     if (!m_shownCc.isEmpty())
         meta += tr("\nCc: %1").arg(m_shownCc);
     meta += QLatin1Char('\n') + QLocale().toString(when, QLocale::LongFormat);
@@ -500,6 +575,7 @@ void MainWindow::clearReader() {
     m_pendingBodyId = 0;
     m_shownText.clear();
     m_shownCc.clear();
+    m_linked->hide();
     m_subject->hide();
     m_meta->hide();
     m_remoteBar->hide();
@@ -520,10 +596,13 @@ void MainWindow::updateActions() {
     m_deleteAct->setEnabled(any);
     m_readAct->setEnabled(any);
     m_starAct->setEnabled(any);
+    m_extractAct->setEnabled(one && m_extractingId == 0);
     m_readAct->setText(one && !m.value("seen").toBool() ? tr("Mark read") : tr("Mark unread"));
     m_starAct->setText(one && m.value("flagged").toBool() ? tr("Remove star") : tr("Star"));
     m_newAct->setEnabled(!m_core->call("accounts.list").toArray().isEmpty());
 
+    if (m_stack->currentIndex() != 0)
+        return;
     QString status;
     if (m_syncing > 0)
         status = tr("Checking mail…");
@@ -596,15 +675,15 @@ void MainWindow::reply(ReplyKind kind) {
     if (kind == ReplyKind::Forward) {
         d.subject = withPrefix(QStringLiteral("Fwd:"), subject);
         d.text = QStringLiteral("\n\n-------- Forwarded message --------\nFrom: %1\nDate: %2\nSubject: %3\nTo: %4\n\n%5")
-                     .arg(sender(m), date, subject, m.value("to").toString(), m_shownText);
+                     .arg(senderLabel(m), date, subject, m.value("to").toString(), m_shownText);
         compose(d);
         return;
     }
 
     d.replyToId = jsonId(m.value("id"));
-    d.to = sender(m);
+    d.to = senderLabel(m);
     d.subject = withPrefix(QStringLiteral("Re:"), subject);
-    d.text = QStringLiteral("\n\nOn %1, %2 wrote:\n%3").arg(date, sender(m), quoted(m_shownText));
+    d.text = QStringLiteral("\n\nOn %1, %2 wrote:\n%3").arg(date, senderLabel(m), quoted(m_shownText));
 
     if (kind == ReplyKind::ReplyAll) {
         // Everyone on To and Cc except ourselves.
@@ -685,7 +764,130 @@ void MainWindow::onEvent(const QJsonObject &event) {
     } else if (type == QLatin1String("sync_finished")) {
         m_syncing = qMax(0, m_syncing - 1);
         updateActions();
+    } else if (type == QLatin1String("items_extracted")) {
+        if (event.value("token").toString() != m_extractToken)
+            return;
+        m_extractingId = 0;
+        statusBar()->clearMessage();
+        updateActions();
+        QList<Item> found;
+        for (const QJsonValue &v : event.value("items").toArray())
+            found.append(Item::fromJson(v.toObject()));
+        const QString subject = found.isEmpty() ? m_subject->text() : found.first().sourceSubject;
+        ExtractionDialog dialog(m_items, subject, event.value("summary").toString(), event.value("truncated").toBool(),
+                                found, this);
+        dialog.exec();
+    } else if (type == QLatin1String("items_extract_error")) {
+        if (event.value("token").toString() != m_extractToken)
+            return;
+        m_extractingId = 0;
+        updateActions();
+        statusBar()->showMessage(event.value("message").toString(), 10000);
     } else if (type == QLatin1String("error")) {
         statusBar()->showMessage(event.value("message").toString(), 8000);
     }
+}
+
+// ---- to-do and calendar ----------------------------------------------------
+
+int MainWindow::view() const {
+    return m_stack->currentIndex();
+}
+
+void MainWindow::setView(int index) {
+    m_stack->setCurrentIndex(index);
+    m_mailBar->setVisible(index == 0);
+    if (index == 0) {
+        updateActions();
+        m_list->setFocus();
+    } else {
+        m_statusLabel->clear();
+        (index == 1 ? static_cast<QWidget *>(m_todo) : static_cast<QWidget *>(m_calendar->grid()))->setFocus();
+    }
+}
+
+void MainWindow::newItem(const QString &day) {
+    Item item;
+    item.date = day;
+    editItem(item);
+}
+
+void MainWindow::editItem(const Item &item) {
+    ItemEditor dialog(m_items, item, this);
+    connect(&dialog, &ItemEditor::openEmailRequested, this, &MainWindow::openSource);
+    dialog.exec();
+}
+
+// Shows the email an item was made from.
+void MainWindow::openSource(const Item &item) {
+    const QJsonObject source = m_core->call("items.source", {{"id", double(item.id)}}).toObject();
+    if (source.isEmpty()) {
+        statusBar()->showMessage(tr("The email this came from is no longer in Brick."), 6000);
+        return;
+    }
+    const qint64 folderId = jsonId(source.value("folder_id"));
+    const qint64 messageId = jsonId(source.value("message_id"));
+    m_tabs->setCurrentIndex(0);
+    if (!m_search->text().isEmpty()) {
+        QSignalBlocker block(m_search);
+        m_search->clear();
+    }
+    for (QTreeWidgetItemIterator it(m_folders); *it; ++it) {
+        if ((*it)->data(0, FolderIdRole).isValid() && (*it)->data(0, FolderIdRole).toLongLong() == folderId) {
+            m_folders->setCurrentItem(*it);
+            break;
+        }
+    }
+    if (m_model->isSearch())
+        folderSelected();
+    const int row = m_model->ensureRow(messageId);
+    if (row >= 0) {
+        const QModelIndex index = m_model->index(row, 0);
+        m_list->setCurrentIndex(index);
+        m_list->scrollTo(index);
+    }
+}
+
+void MainWindow::showLinkedItems() {
+    if (m_shownId == 0) {
+        m_linked->hide();
+        return;
+    }
+    const QList<Item> items = m_items->forMessage(m_shownId);
+    if (items.isEmpty()) {
+        m_linked->hide();
+        return;
+    }
+    QStringList parts;
+    for (const Item &i : items)
+        parts << (i.whenLabel().isEmpty() ? i.title : QStringLiteral("%1 (%2)").arg(i.title, i.whenLabel()));
+    m_linked->setText(tr("On your lists: %1").arg(parts.join(QStringLiteral("; "))));
+    m_linked->show();
+}
+
+void MainWindow::claudeSettings() {
+    ClaudeSettingsDialog dialog(m_core, this);
+    dialog.exec();
+}
+
+// Sends the open email to Claude. The proposals arrive as an event and are
+// shown for review; nothing is saved until the user confirms.
+void MainWindow::extractItems() {
+    if (m_shownId == 0 || m_extractingId != 0)
+        return;
+    if (!ClaudeSettingsDialog::isConfigured(m_core)) {
+        claudeSettings();
+        if (!ClaudeSettingsDialog::isConfigured(m_core))
+            return;
+    }
+    m_extractToken = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    QString error;
+    m_core->call("items.extract", {{"id", double(m_shownId)}, {"token", m_extractToken}}, &error);
+    if (!error.isEmpty()) {
+        statusBar()->showMessage(error, 8000);
+        return;
+    }
+    m_extractingId = m_shownId;
+    m_extractAct->setEnabled(false);
+    statusBar()->showMessage(tr("Asking Claude…"));
 }

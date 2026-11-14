@@ -9,7 +9,7 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
-find_package(Qt6 6.2 REQUIRED COMPONENTS Widgets WebEngineWidgets)
+find_package(Qt6 6.2 REQUIRED COMPONENTS Widgets Network WebEngineWidgets)
 
 # The Rust engine is built by cargo and linked as a static library.
 set(BRICK_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/..)
@@ -28,12 +28,20 @@ add_executable(brick
   src/MessageView.cpp  src/MessageView.h
   src/MainWindow.cpp   src/MainWindow.h
   src/ComposeWindow.cpp src/ComposeWindow.h
-  src/AccountDialog.cpp src/AccountDialog.h)
+  src/AccountDialog.cpp src/AccountDialog.h
+  src/Item.cpp         src/Item.h
+  src/ItemStore.cpp    src/ItemStore.h
+  src/ItemList.cpp     src/ItemList.h
+  src/ItemEditor.cpp   src/ItemEditor.h
+  src/ClaudeDialogs.cpp src/ClaudeDialogs.h
+  src/TodoView.cpp     src/TodoView.h
+  src/CalendarView.cpp src/CalendarView.h
+  src/DebugServer.cpp  src/DebugServer.h)
 
 add_dependencies(brick brick_core_build)
 target_include_directories(brick PRIVATE ${BRICK_ROOT}/core/include)
 target_link_libraries(brick PRIVATE
-  Qt6::Widgets Qt6::WebEngineWidgets
+  Qt6::Widgets Qt6::Network Qt6::WebEngineWidgets
   ${BRICK_CORE_LIB} pthread dl m)
 target_compile_options(brick PRIVATE -Wall -Wextra)
 
