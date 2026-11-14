@@ -21,6 +21,10 @@ public:
     // Every folder with this role across accounts ("inbox" is the unified inbox).
     void showRole(const QString &role);
     void showSearch(const QString &query);
+    // Groups the list into conversations: one row per conversation, showing its
+    // newest message. Search results are never grouped.
+    void setThreaded(bool on);
+    bool threaded() const { return m_threaded && m_query.isEmpty(); }
     // Re-reads the current folder or search. The view's selection and scroll
     // position are reset; MainWindow restores them by message id.
     void refresh();
@@ -51,6 +55,7 @@ private:
     qint64 m_folderId = 0;
     QString m_role;
     QString m_query;
+    bool m_threaded = false;
     int m_total = 0;
     mutable QHash<int, QJsonArray> m_pages;
 };

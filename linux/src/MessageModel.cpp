@@ -35,6 +35,15 @@ void MessageModel::showSearch(const QString &query) {
     endResetModel();
 }
 
+void MessageModel::setThreaded(bool on) {
+    if (on == m_threaded)
+        return;
+    beginResetModel();
+    m_threaded = on;
+    load();
+    endResetModel();
+}
+
 void MessageModel::refresh() {
     beginResetModel();
     load();
@@ -63,7 +72,7 @@ void MessageModel::load() {
 }
 
 QJsonObject MessageModel::listParams(int offset) const {
-    QJsonObject p{{"offset", offset}, {"limit", PageSize}};
+    QJsonObject p{{"offset", offset}, {"limit", PageSize}, {"threaded", m_threaded}};
     if (!m_role.isEmpty())
         p.insert("role", m_role);
     else
@@ -138,7 +147,9 @@ QVariant MessageModel::data(const QModelIndex &index, int role) const {
     const QJsonObject m = message(index.row());
     if (m.isEmpty())
         return {};
-    const bool unread = !m.value("seen").toBool();
+    // A conversation is unread while any of its messages is.
+    const int inThread = m.value("thread_count").toInt(1);
+    const bool unread = m.contains("thread_unread") ? m.value("thread_unread").toInt() > 0 : !m.value("seen").toBool();
 
     switch (role) {
     case Qt::DisplayRole:
@@ -155,6 +166,8 @@ QVariant MessageModel::data(const QModelIndex &index, int role) const {
                 subject = tr("(no subject)");
             if (m.value("has_attachments").toBool())
                 subject.prepend(QStringLiteral("📎 "));
+            if (inThread > 1)
+                subject.prepend(QStringLiteral("(%1) ").arg(inThread));
             const QString snippet = m.value("snippet").toString();
             return snippet.isEmpty() ? subject : subject + QStringLiteral("  —  ") + snippet;
         }

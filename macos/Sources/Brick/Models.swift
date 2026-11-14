@@ -44,6 +44,15 @@ struct MessageRow: Decodable, Identifiable, Hashable {
     let answered: Bool
     let hasAttachments: Bool
     let snippet: String
+    /// Set when the list is grouped into conversations: the conversation this
+    /// row is the newest message of, and how many of its messages are in the list.
+    var threadId: Int64? = nil
+    var threadCount: Int? = nil
+    var threadUnread: Int? = nil
+
+    var messagesInThread: Int { threadCount ?? 1 }
+    /// Whether anything in the conversation is unread (just this message when not grouped).
+    var hasUnread: Bool { threadUnread.map { $0 > 0 } ?? !seen }
 
     var sender: String { fromName.isEmpty ? fromAddr : fromName }
     var fullSender: String { fromName.isEmpty ? fromAddr : "\(fromName) <\(fromAddr)>" }
@@ -73,6 +82,28 @@ struct MessageBody: Decodable {
     let text: String
     let attachments: [Attachment]
     let blockedRemote: Bool
+    /// Carries a calendar invitation that `items.import_invitation` can add.
+    let invitation: Bool?
+
+    var hasInvitation: Bool { invitation ?? false }
+}
+
+/// What importing a calendar file or an invitation did.
+struct ImportResult: Decodable {
+    let added: Int
+    let skipped: Int
+    let repeatsDropped: Int
+
+    var summary: String {
+        var text = added == 1 ? "Added 1 item" : "Added \(added) items"
+        if skipped > 0 { text += ", \(skipped) already there" }
+        if repeatsDropped > 0 { text += ", \(repeatsDropped) repeat\(repeatsDropped == 1 ? "" : "s") too complex to keep" }
+        return text + "."
+    }
+}
+
+struct ThreadMessages: Decodable {
+    let rows: [MessageRow]
 }
 
 struct MessageDetail: Decodable {
@@ -108,6 +139,8 @@ struct ComposeDraft: Codable, Hashable {
     var subject = ""
     var text = ""
     var replyToId: Int64?
+    /// An alias to send as; nil for the account's own address.
+    var from: String?
 }
 
 // MARK: - To-do and calendar items
@@ -153,14 +186,65 @@ struct Item: Codable, Identifiable, Hashable {
     var sourceMessageId = ""
     var sourceSubject = ""
     var sourceFrom = ""
+    /// "", "daily", "weekly", "monthly" or "yearly". `date` is the next occurrence still to do.
+    var `repeat` = ""
+    /// The last day an occurrence may start.
+    var repeatUntil: String?
 
     var isFromEmail: Bool { !sourceMessageId.isEmpty }
     var isOverdue: Bool { !done && (endDate ?? date).map { $0 < Day.today } == true }
 
-    /// Whether the item falls on the given day, counting every day of a span.
+    var isRepeating: Bool { !self.repeat.isEmpty }
+
+    /// Whether an occurrence starts on `day`. Monthly and yearly repeats that
+    /// start on the 29th to 31st fall on the last day of a shorter month.
+    func startsOn(_ day: String) -> Bool {
+        guard let date, day >= date else { return false }
+        if !isRepeating { return day == date }
+        if let repeatUntil, day > repeatUntil { return false }
+        guard let start = Day.date(date), let on = Day.date(day) else { return false }
+        let calendar = Calendar.current
+        switch self.repeat {
+        case "daily":
+            return true
+        case "weekly":
+            return (calendar.dateComponents([.day], from: start, to: on).day ?? 1) % 7 == 0
+        case "monthly", "yearly":
+            let startParts = calendar.dateComponents([.month, .day], from: start)
+            let onParts = calendar.dateComponents([.month, .day], from: on)
+            let length = calendar.range(of: .day, in: .month, for: on)?.count ?? 31
+            if self.repeat == "yearly", startParts.month != onParts.month { return false }
+            return onParts.day == min(startParts.day ?? 1, length)
+        default:
+            return false
+        }
+    }
+
+    /// Whether the item falls on the given day, counting every day of a span
+    /// and every occurrence of a repeating item.
     func occurs(on day: String) -> Bool {
         guard let date else { return false }
-        return date <= day && day <= (endDate ?? date)
+        if !isRepeating { return date <= day && day <= (endDate ?? date) }
+        guard day >= date, let on = Day.date(day), let start = Day.date(date) else { return false }
+        let calendar = Calendar.current
+        let span = endDate.flatMap(Day.date).flatMap { calendar.dateComponents([.day], from: start, to: $0).day } ?? 0
+        // An occurrence covering `day` started on it, or up to `span` days before.
+        for back in 0...max(span, 0) {
+            guard let from = calendar.date(byAdding: .day, value: -back, to: on) else { continue }
+            if startsOn(Day.string(from)) { return true }
+        }
+        return false
+    }
+
+    /// "Repeats weekly until 3 Mar 2027", or nil.
+    var repeatLabel: String? {
+        guard isRepeating else { return nil }
+        let unit = ["daily": "daily", "weekly": "weekly", "monthly": "monthly", "yearly": "yearly"][self.repeat] ?? self.repeat
+        var text = "Repeats \(unit)"
+        if let repeatUntil, let end = Day.date(repeatUntil) {
+            text += " until " + end.formatted(.dateTime.day().month(.abbreviated).year())
+        }
+        return text
     }
 
     /// "Thu 12 Nov, 14:00 to 15:00", or nil for an undated item.
@@ -198,6 +282,7 @@ struct Item: Codable, Identifiable, Hashable {
             "done": done,
             "source_account_id": orNull(sourceAccountId),
             "source_message_id": sourceMessageId, "source_subject": sourceSubject, "source_from": sourceFrom,
+            "repeat": self.repeat, "repeat_until": orNull(repeatUntil),
         ]
     }
 }
@@ -239,4 +324,19 @@ enum AppTab: String, CaseIterable, Identifiable {
         case .calendar: "Calendar"
         }
     }
+}
+
+enum CalendarMode: String, CaseIterable, Identifiable {
+    case month, week, day
+    var id: String { rawValue }
+    var title: String { rawValue.capitalized }
+}
+
+/// One entry of the From picker: an account's own address or one of its aliases.
+struct FromChoice: Identifiable, Hashable {
+    let accountId: Int64
+    /// nil for the account's own address.
+    let alias: String?
+    let label: String
+    var id: String { "\(accountId)|\(alias ?? "")" }
 }

@@ -26,6 +26,14 @@
  *   messages.list       {folder_id, offset, limit}   -> {total, offset, rows}
  *                       {role, offset, limit}        the same across every account's folders of that
  *                                                    role; role "inbox" is the unified inbox
+ *                       add "threaded": true         one row per conversation (its newest message in
+ *                                                    that folder or role), with thread_id, thread_count
+ *                                                    and thread_unread; total counts conversations
+ *   messages.thread     {id, folder_id? | role?}     -> {rows}  every message in the conversation id is in,
+ *                                                    oldest first, across its account's folders, or only
+ *                                                    those in the folder or role given. Conversations are
+ *                                                    linked by Message-ID, In-Reply-To and References,
+ *                                                    never by subject.
  *   messages.search     {query, account_id?, limit?} -> {rows}
  *   messages.get        {id, allow_remote?}          -> {message, cc, body | null}
  *                                                       body null: it is being fetched; wait for body_ready.

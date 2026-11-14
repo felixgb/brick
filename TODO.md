@@ -24,7 +24,9 @@ longer working list. Items are roughly ordered by priority within each section.
 ## Mail
 
 - [ ] IMAP IDLE for push, replacing the two-minute poll
-- [ ] Conversation threading in the message list
+- [x] Conversation threading in the message list (engine, Linux and macOS; macOS not compiled)
+- [ ] Thread by subject when the headers are missing or broken (not done on purpose: it merges unrelated mail)
+- [ ] Undo and moving a conversation need a conversation-aware design
 - [ ] HTML composing
 - [ ] Sending attachments
 - [ ] Drafts saved to the server
@@ -59,11 +61,14 @@ longer working list. Items are roughly ordered by priority within each section.
 
 ## macOS follow-ups for what the engine and Linux app now do
 
-The engine changes are in and tested, but the macOS front end has not been touched (it can't be built here):
+All of this is now written in Swift (repeat, end-day and until controls, week and day views, `.ics` import and
+export under File, the invitation bar, All Inboxes, aliases and signatures in Settings > Accounts, J and K,
+conversations), but **none of it has been compiled or run**, because there is no Swift toolchain here:
 
-- [ ] Repeat, end-day and until controls in the item editor. Until then, editing a repeating item on macOS drops its repeat, because the macOS payload doesn't carry the field
-- [ ] Week and day views, `.ics` import and export, and the invitation button
-- [ ] Signatures, aliases and a unified inbox entry
+- [ ] Build on a Mac and fix whatever the compiler finds (`./macos/build-app.sh`)
+- [ ] Try each feature by hand: tick a repeating item, import an `.ics`, open an invitation, send as an alias
+- [ ] Check the week view's layout and the double-click-to-add gesture against real clicks
+- [ ] Check J and K work in the message list (`onKeyPress` needs the list focused)
 
 ## Linux app
 
@@ -77,7 +82,7 @@ The engine changes are in and tested, but the macOS front end has not been touch
 
 - [ ] Packaging (AppImage or Flatpak) and install of `brick.desktop`
 - [x] Decide how to run and inspect it for debugging: offscreen platform plus a debug socket (`linux/tools/`)
-- [ ] Match macOS features as they land
+- [x] Match macOS features (written, not compiled; see above)
 
 ## Engine and interface
 

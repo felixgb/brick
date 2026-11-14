@@ -5,6 +5,10 @@ struct ComposeView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var draft: ComposeDraft
     @State private var problem: String?
+    @State private var choices: [FromChoice] = []
+    @State private var choice = ""
+    /// The signature block currently in the body, if any.
+    @State private var signature = ""
     @FocusState private var focus: Field?
 
     private enum Field { case to, body }
@@ -19,10 +23,9 @@ struct ComposeView: View {
     var body: some View {
         VStack(spacing: 0) {
             Form {
-                Picker("From", selection: $draft.accountId) {
-                    ForEach(model.accounts) { account in
-                        Text(account.name.isEmpty ? account.email : "\(account.name) <\(account.email)>")
-                            .tag(account.id)
+                Picker("From", selection: $choice) {
+                    ForEach(choices) { option in
+                        Text(option.label).tag(option.id)
                     }
                 }
                 TextField("To", text: $draft.to, prompt: Text("name@example.com"))
@@ -65,7 +68,16 @@ struct ComposeView: View {
         }
         .onAppear {
             if draft.accountId == 0 { draft.accountId = model.currentAccountId }
+            choices = model.fromChoices()
+            choice = FromChoice(accountId: draft.accountId, alias: draft.from, label: "").id
+            applySignature()
             focus = draft.to.isEmpty ? .to : .body
+        }
+        .onChange(of: choice) { _, new in
+            guard let picked = choices.first(where: { $0.id == new }) else { return }
+            draft.accountId = picked.accountId
+            draft.from = picked.alias
+            applySignature()
         }
         .onChange(of: state) { _, new in
             switch new {
@@ -79,6 +91,34 @@ struct ComposeView: View {
                 break
             }
         }
+    }
+
+    private func signatureBlock(for accountId: Int64) -> String {
+        let text = model.signature(for: accountId)
+        return text.isEmpty ? "" : "-- \n" + text
+    }
+
+    /// Puts the sending account's signature above any quoted text, replacing
+    /// the previous account's when From changes.
+    private func applySignature() {
+        let next = signatureBlock(for: draft.accountId)
+        guard next != signature else { return }
+        var text = draft.text
+        let block = "\n\n" + signature
+        if !signature.isEmpty, text.contains(block) {
+            text = text.replacingOccurrences(of: block, with: next.isEmpty ? "" : "\n\n" + next)
+        } else if !signature.isEmpty, text.contains(signature) {
+            text = text.replacingOccurrences(of: signature, with: next)
+        } else if !next.isEmpty {
+            // A restored window already has it.
+            if text.contains(next) {
+                signature = next
+                return
+            }
+            text = "\n\n" + next + text
+        }
+        signature = next
+        draft.text = text
     }
 
     private func send() {

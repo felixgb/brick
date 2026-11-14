@@ -17,6 +17,7 @@ class QLineEdit;
 class QStackedWidget;
 class QTabBar;
 class QTimer;
+class QListWidget;
 class QToolBar;
 class QToolButton;
 class QTreeView;
@@ -57,6 +58,10 @@ private:
     void moveSelected(const QString &to);
     void setSelectedFlags(const QJsonObject &flags);
     QList<qint64> selectedIds() const;
+    // The selection with every message of each selected conversation (in the
+    // folder being shown) added, for actions that apply to whole conversations.
+    QList<qint64> expandedIds() const;
+    void showThread(qint64 id);
     QJsonObject currentMessage() const;
     qint64 currentAccountId() const;
     Q_INVOKABLE void addAccount();
@@ -88,6 +93,9 @@ private:
     QTimer *m_refreshTimer;
     QLabel *m_linked;
     QWidget *m_inviteBar;
+    QListWidget *m_threadList;
+    QJsonObject m_shown; // the message in the reader
+    QAction *m_threadAct;
     QAction *m_nextAct;
     QAction *m_prevAct;
 

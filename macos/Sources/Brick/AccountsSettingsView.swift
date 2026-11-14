@@ -5,6 +5,7 @@ struct AccountsSettingsView: View {
     @State private var selected: Int64?
     @State private var adding = false
     @State private var confirmingRemoval = false
+    @State private var optionsFor: Account?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -28,6 +29,11 @@ struct AccountsSettingsView: View {
                 Button("Add account", systemImage: "plus") { adding = true }
                 Button("Remove account", systemImage: "minus") { confirmingRemoval = true }
                     .disabled(selected == nil)
+                Button("Addresses and signature", systemImage: "signature") {
+                    optionsFor = model.accounts.first { $0.id == selected }
+                }
+                .disabled(selected == nil)
+                .help("Extra addresses to send from, and a signature")
                 Spacer()
             }
             .labelStyle(.iconOnly)
@@ -37,6 +43,9 @@ struct AccountsSettingsView: View {
         .frame(width: 460, height: 320)
         .sheet(isPresented: $adding) {
             AddAccountSheet()
+        }
+        .sheet(item: $optionsFor) { account in
+            AccountOptionsSheet(account: account)
         }
         .confirmationDialog(
             "Remove \(model.accounts.first { $0.id == selected }?.email ?? "this account") from Brick?",
@@ -48,6 +57,58 @@ struct AccountsSettingsView: View {
             }
         } message: {
             Text("Mail stays on the server. Only the local copy and saved sign-in are deleted.")
+        }
+    }
+}
+
+/// Extra addresses an account may send as, and its signature.
+struct AccountOptionsSheet: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    let account: Account
+    @State private var aliases = ""
+    @State private var signature = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(account.email).font(.headline)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Other addresses you can send from").font(.subheadline)
+                TextEditor(text: $aliases)
+                    .font(.body.monospaced())
+                    .frame(height: 64)
+                    .border(Color.secondary.opacity(0.3))
+                Text("One per line. Your mail provider must let this account send as them.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Signature").font(.subheadline)
+                TextEditor(text: $signature)
+                    .frame(height: 96)
+                    .border(Color.secondary.opacity(0.3))
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Save") {
+                    let list = aliases.split(whereSeparator: { ",; \n\t".contains($0) }).map(String.init)
+                    model.setSetting("aliases_\(account.id)", list.joined(separator: "\n"))
+                    model.setSetting("signature_\(account.id)", signature.trimmingCharacters(in: .whitespacesAndNewlines))
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 420)
+        .onAppear {
+            aliases = model.aliases(for: account.id).joined(separator: "\n")
+            signature = model.signature(for: account.id)
         }
     }
 }

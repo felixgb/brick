@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import Observation
+import UniformTypeIdentifiers
 
 enum SendState: Equatable {
     case sending
@@ -38,7 +39,19 @@ final class AppModel {
         didSet { if searchText != oldValue { scheduleSearch() } }
     }
 
+    /// Group the message list into conversations.
+    var threaded = UserDefaults.standard.object(forKey: "threaded") as? Bool ?? true {
+        didSet {
+            guard threaded != oldValue else { return }
+            UserDefaults.standard.set(threaded, forKey: "threaded")
+            selection = []
+            loadMessages()
+        }
+    }
+
     var detail: MessageDetail?
+    /// Every message in the open message's conversation, oldest first.
+    var thread: [MessageRow] = []
     var allowRemote = false
     private var pendingBody: Int64?
 
@@ -56,8 +69,14 @@ final class AppModel {
 
     var syncing = 0
     var banner: String?
+    /// A passing, non-error message ("Added 3 items.").
+    var notice: String?
+    private var noticeTask: Task<Void, Never>?
     var sendStates: [String: SendState] = [:]
     var addAccountState: AddAccountState = .idle
+
+    /// Stands in for a folder id: every account's inbox together.
+    static let allInboxes: Int64 = -1
 
     private static let pageSize = 200
     private var searchTask: Task<Void, Never>?
@@ -97,6 +116,8 @@ final class AppModel {
         return folders.values.joined().first { $0.id == id }
     }
 
+    var isUnified: Bool { selectedFolder == Self.allInboxes }
+
     var currentAccountId: Int64 {
         selectedRow?.accountId ?? folder(selectedFolder)?.accountId ?? accounts.first?.id ?? 0
     }
@@ -112,7 +133,8 @@ final class AppModel {
             all[account.id] = list.filter(\.selectable)
         }
         folders = all
-        if folder(selectedFolder) == nil {
+        let unifiedStillMakesSense = isUnified && accounts.count > 1
+        if !unifiedStillMakesSense && folder(selectedFolder) == nil {
             // Nothing open yet (first run, or the open folder went away): show an inbox.
             var inbox: Int64?
             for account in accounts where inbox == nil {
@@ -138,23 +160,36 @@ final class AppModel {
             total = rows.count
             return
         }
-        guard let folderId = selectedFolder else {
+        // Keep as many rows loaded as were already on screen so the list doesn't jump.
+        let want = max(Self.pageSize, rows.count)
+        guard let params = listParams(offset: 0, limit: min(want, 1000)) else {
             rows = []
             total = 0
             return
         }
-        // Keep as many rows loaded as were already on screen so the list doesn't jump.
-        let want = max(Self.pageSize, rows.count)
-        let page: MessagePage? = try? core.call("messages.list", ["folder_id": folderId, "offset": 0, "limit": min(want, 1000)])
+        let page: MessagePage? = try? core.call("messages.list", params)
         rows = page?.rows ?? []
         total = page?.total ?? 0
     }
 
+    private func listParams(offset: Int, limit: Int) -> [String: Any]? {
+        var params: [String: Any] = ["offset": offset, "limit": limit, "threaded": threaded]
+        if isUnified {
+            params["role"] = "inbox"
+        } else if let folderId = selectedFolder {
+            params["folder_id"] = folderId
+        } else {
+            return nil
+        }
+        return params
+    }
+
     /// Called when the last loaded row scrolls into view.
     func loadMore() {
-        guard let core, !isSearching, let folderId = selectedFolder, rows.count < total else { return }
-        let page: MessagePage? = try? core.call(
-            "messages.list", ["folder_id": folderId, "offset": rows.count, "limit": Self.pageSize])
+        guard let core, !isSearching, rows.count < total,
+            let params = listParams(offset: rows.count, limit: Self.pageSize)
+        else { return }
+        let page: MessagePage? = try? core.call("messages.list", params)
         let known = Set(rows.map(\.id))
         rows.append(contentsOf: (page?.rows ?? []).filter { !known.contains($0.id) })
     }
@@ -177,6 +212,7 @@ final class AppModel {
             guard !Task.isCancelled, let self else { return }
             self.loadMessages()
             self.selection = self.selection.intersection(self.rows.map(\.id))
+            self.reloadThread()
         }
     }
 
@@ -185,6 +221,7 @@ final class AppModel {
     private func selectionChanged() {
         guard let row = selectedRow else {
             detail = nil
+            thread = []
             pendingBody = nil
             linkedItems = []
             return
@@ -192,8 +229,9 @@ final class AppModel {
         if detail?.message.id == row.id { return }
         allowRemote = false
         open(row.id)
-        if !row.seen {
-            setFlags([row.id], seen: true)
+        if row.hasUnread {
+            // Opening a conversation reads all of it.
+            setFlags(expanded([row.id]), seen: true)
         }
     }
 
@@ -203,11 +241,46 @@ final class AppModel {
             let loaded: MessageDetail = try core.call("messages.get", ["id": id, "allow_remote": allowRemote])
             detail = loaded
             pendingBody = loaded.body == nil ? id : nil
+            reloadThread()
             reloadLinkedItems()
         } catch {
             detail = nil
             pendingBody = nil
         }
+    }
+
+    private func reloadThread() {
+        guard let core, let id = detail?.message.id else {
+            thread = []
+            return
+        }
+        let found: ThreadMessages? = try? core.call("messages.thread", ["id": id])
+        thread = found?.rows ?? []
+    }
+
+    /// Shows another message of the open conversation without changing the list selection.
+    func openInThread(_ id: Int64) {
+        guard detail?.message.id != id else { return }
+        allowRemote = false
+        open(id)
+        if let row = thread.first(where: { $0.id == id }), !row.seen {
+            setFlags([id], seen: true)
+        }
+    }
+
+    /// With the list grouped into conversations, a row stands for every message
+    /// of its conversation that the list covers; actions apply to all of them.
+    func expanded(_ ids: Set<Int64>) -> Set<Int64> {
+        guard threaded, !isSearching, let core else { return ids }
+        var all = ids
+        for id in ids {
+            guard let row = rows.first(where: { $0.id == id }), row.messagesInThread > 1 else { continue }
+            var params: [String: Any] = ["id": id]
+            if isUnified { params["role"] = "inbox" } else { params["folder_id"] = row.folderId }
+            let found: ThreadMessages? = try? core.call("messages.thread", params)
+            all.formUnion((found?.rows ?? []).map(\.id))
+        }
+        return all
     }
 
     func showRemoteImages() {
@@ -227,20 +300,30 @@ final class AppModel {
     }
 
     func toggleRead() {
-        guard let first = rows.first(where: { selection.contains($0.id) }) else { return }
-        setFlags(selection, seen: !first.seen)
+        guard !selection.isEmpty else { return }
+        let hasUnread = rows.contains { selection.contains($0.id) && $0.hasUnread }
+        setFlags(expanded(selection), seen: hasUnread)
     }
 
     func toggleStar() {
         guard let first = rows.first(where: { selection.contains($0.id) }) else { return }
-        setFlags(selection, flagged: !first.flagged)
+        setFlags(expanded(selection), flagged: !first.flagged)
+    }
+
+    /// Selects the message `offset` rows from the selected one (J and K).
+    func step(_ offset: Int) {
+        guard !rows.isEmpty else { return }
+        let current = rows.firstIndex { selection.contains($0.id) }
+        let next = current.map { min(max($0 + offset, 0), rows.count - 1) } ?? (offset > 0 ? 0 : rows.count - 1)
+        selection = [rows[next].id]
+        if next >= rows.count - 1 { loadMore() }
     }
 
     /// Moves the selection to "archive" or "trash" and selects the next message.
     func moveSelection(to destination: String) {
         guard let core, !selection.isEmpty else { return }
-        let ids = selection
-        let firstIndex = rows.firstIndex { ids.contains($0.id) } ?? 0
+        let ids = expanded(selection)
+        let firstIndex = rows.firstIndex { selection.contains($0.id) } ?? 0
         guard attempt({ try core.send("messages.move", ["ids": Array(ids), "to": destination]) }) else { return }
         // The engine removed the rows locally already; show that immediately.
         refreshTask?.cancel()
@@ -308,11 +391,14 @@ final class AppModel {
     }
 
     func setDone(_ item: Item, _ done: Bool) {
-        // Flip it locally first so the tick is instant.
-        if let index = items.firstIndex(where: { $0.id == item.id }) {
+        // A repeating item doesn't finish: it moves to its next occurrence, so
+        // only the engine knows what to show. Anything else flips locally first
+        // so the tick is instant.
+        if !item.isRepeating, let index = items.firstIndex(where: { $0.id == item.id }) {
             items[index].done = done
         }
         attempt { try core?.send("items.set_done", ["id": item.id, "done": done]) }
+        if item.isRepeating { reloadItems() }
     }
 
     func delete(_ item: Item) {
@@ -320,8 +406,75 @@ final class AppModel {
         reloadItems()
     }
 
-    func newItem(on day: String? = nil) {
-        editingItem = Item(date: day)
+    func newItem(on day: String? = nil, at time: String? = nil) {
+        editingItem = Item(date: day, startTime: time)
+    }
+
+    /// Shows a passing message for a few seconds.
+    func notify(_ text: String) {
+        notice = text
+        noticeTask?.cancel()
+        noticeTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(6))
+            guard !Task.isCancelled else { return }
+            self?.notice = nil
+        }
+    }
+
+    private static var calendarTypes: [UTType] { [UTType(filenameExtension: "ics")].compactMap { $0 } }
+
+    func exportCalendar() {
+        guard let core else { return }
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "Brick calendar.ics"
+        panel.allowedContentTypes = Self.calendarTypes
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let text = (try core.send("items.export_ics") as? String) ?? ""
+            try text.write(to: url, atomically: true, encoding: .utf8)
+            notify("Exported to \(url.lastPathComponent).")
+        } catch {
+            banner = error.localizedDescription
+        }
+    }
+
+    func importCalendar() {
+        guard let core else { return }
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = Self.calendarTypes
+        panel.allowsMultipleSelection = true
+        guard panel.runModal() == .OK else { return }
+        var added = 0, skipped = 0, dropped = 0
+        for url in panel.urls {
+            do {
+                let text: String
+                if let utf8 = try? String(contentsOf: url, encoding: .utf8) {
+                    text = utf8
+                } else {
+                    text = try String(contentsOf: url, encoding: .isoLatin1)
+                }
+                let result: ImportResult = try core.call("items.import_ics", ["text": text])
+                added += result.added
+                skipped += result.skipped
+                dropped += result.repeatsDropped
+            } catch {
+                banner = "\(url.lastPathComponent): \(error.localizedDescription)"
+            }
+        }
+        reloadItems()
+        notify(ImportResult(added: added, skipped: skipped, repeatsDropped: dropped).summary)
+    }
+
+    /// Adds the calendar invitation the open email carries.
+    func addInvitation() {
+        guard let core, let id = detail?.message.id else { return }
+        do {
+            let result: ImportResult = try core.call("items.import_invitation", ["id": id])
+            reloadItems()
+            notify(result.summary)
+        } catch {
+            banner = error.localizedDescription
+        }
     }
 
     /// Shows the email an item was made from.
@@ -388,7 +541,7 @@ final class AppModel {
     enum ReplyKind { case reply, replyAll, forward }
 
     func draft(_ kind: ReplyKind) -> ComposeDraft? {
-        guard let row = selectedRow else { return nil }
+        guard let row = detail?.message ?? selectedRow else { return nil }
         let body = detail?.message.id == row.id ? (detail?.body?.text ?? "") : ""
         let date = row.when.formatted(date: .long, time: .shortened)
         var draft = ComposeDraft(accountId: row.accountId)
@@ -432,6 +585,7 @@ final class AppModel {
             "subject": draft.subject, "text": draft.text, "token": draft.token,
         ]
         if let replyTo = draft.replyToId { params["reply_to_id"] = replyTo }
+        if let from = draft.from { params["from"] = from }
         do {
             try core.send("send", params)
             sendStates[draft.token] = .sending
@@ -445,6 +599,34 @@ final class AppModel {
 
     func setting(_ key: String) -> String {
         ((try? core?.send("settings.get", ["key": key])) as? String) ?? ""
+    }
+
+    func setSetting(_ key: String, _ value: String) {
+        attempt { try core?.send("settings.set", ["key": key, "value": value]) }
+    }
+
+    /// Extra addresses an account may send as.
+    func aliases(for accountId: Int64) -> [String] {
+        setting("aliases_\(accountId)")
+            .split(whereSeparator: { ",; \n\t".contains($0) })
+            .map { String($0) }
+    }
+
+    func signature(for accountId: Int64) -> String {
+        setting("signature_\(accountId)").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Everything the From picker offers.
+    func fromChoices() -> [FromChoice] {
+        accounts.flatMap { account -> [FromChoice] in
+            func label(_ address: String) -> String {
+                account.name.isEmpty ? address : "\(account.name) <\(address)>"
+            }
+            return [FromChoice(accountId: account.id, alias: nil, label: label(account.email))]
+                + aliases(for: account.id).map {
+                    FromChoice(accountId: account.id, alias: $0, label: label($0))
+                }
+        }
     }
 
     func addAccount(provider: Provider, fields: [String: Any], clientId: String, clientSecret: String) {
@@ -481,7 +663,7 @@ final class AppModel {
 
         switch type {
         case "messages_changed":
-            if isSearching || folderId == selectedFolder { scheduleRefresh() }
+            if isSearching || isUnified || folderId == selectedFolder { scheduleRefresh() }
         case "folders_changed", "accounts_changed":
             reloadAccounts()
         case "body_ready":

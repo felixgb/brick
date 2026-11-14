@@ -8,7 +8,7 @@
 use crate::imap::Credential;
 use crate::model::{Account, AuthKind, Security};
 use crate::secrets::{self, KeyringStore, MemoryStore, SecretStore};
-use crate::store::Store;
+use crate::store::{Scope, Store};
 use crate::sync::{self, Emit, Inner};
 use crate::items::{self, Item};
 use crate::{claude, ics, mime, oauth, providers, smtp};
@@ -101,21 +101,41 @@ impl Engine {
             "messages.list" => {
                 let offset = opt::<i64>(p, "offset").unwrap_or(0).max(0);
                 let limit = opt::<i64>(p, "limit").unwrap_or(200).clamp(1, 1000);
-                match opt::<String>(p, "role") {
-                    Some(role) => json!({
-                        "total": store.count_messages_by_role(&role)?,
+                let scope = match opt::<String>(p, "role") {
+                    Some(role) => Scope::Role(role),
+                    None => Scope::Folder(param(p, "folder_id")?),
+                };
+                if opt::<bool>(p, "threaded").unwrap_or(false) {
+                    // One row per conversation; each carries thread_count and thread_unread.
+                    json!({
+                        "total": store.count_threads(&scope)?,
                         "offset": offset,
-                        "rows": store.list_messages_by_role(&role, offset, limit)?,
-                    }),
-                    None => {
-                        let folder_id: i64 = param(p, "folder_id")?;
-                        json!({
+                        "rows": store.list_threads(&scope, offset, limit)?,
+                    })
+                } else {
+                    match scope {
+                        Scope::Role(role) => json!({
+                            "total": store.count_messages_by_role(&role)?,
+                            "offset": offset,
+                            "rows": store.list_messages_by_role(&role, offset, limit)?,
+                        }),
+                        Scope::Folder(folder_id) => json!({
                             "total": store.count_messages(folder_id)?,
                             "offset": offset,
                             "rows": store.list_messages(folder_id, offset, limit)?,
-                        })
+                        }),
                     }
                 }
+            }
+            // Every message of the conversation a message is in, oldest first.
+            // Pass folder_id or role to keep only the messages in that folder or role.
+            "messages.thread" => {
+                let scope = match (opt::<i64>(p, "folder_id"), opt::<String>(p, "role")) {
+                    (Some(id), _) => Some(Scope::Folder(id)),
+                    (None, Some(role)) => Some(Scope::Role(role)),
+                    _ => None,
+                };
+                json!({ "rows": store.thread_of(param(p, "id")?, scope.as_ref())? })
             }
             "messages.search" => {
                 let q: String = param(p, "query")?;

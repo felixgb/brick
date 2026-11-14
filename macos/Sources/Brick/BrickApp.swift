@@ -42,6 +42,10 @@ struct MailCommands: Commands {
                 .keyboardShortcut("n")
                 .disabled(model.accounts.isEmpty)
         }
+        CommandGroup(after: .importExport) {
+            Button("Import Calendar…") { model.importCalendar() }
+            Button("Export Calendar…") { model.exportCalendar() }
+        }
         CommandGroup(before: .toolbar) {
             Button("Mail") { model.tab = .mail }
                 .keyboardShortcut("1")
@@ -49,6 +53,9 @@ struct MailCommands: Commands {
                 .keyboardShortcut("2")
             Button("Calendar") { model.tab = .calendar }
                 .keyboardShortcut("3")
+            Toggle(
+                "Group into Conversations",
+                isOn: Binding(get: { model.threaded }, set: { model.threaded = $0 }))
             Divider()
         }
         CommandMenu("Message") {
@@ -66,6 +73,13 @@ struct MailCommands: Commands {
                 .keyboardShortcut("f", modifiers: [.command, .shift])
                 .disabled(model.selectedRow == nil)
             Divider()
+            Button("Next Message") { model.step(1) }
+                .keyboardShortcut("]")
+                .disabled(model.tab != .mail)
+            Button("Previous Message") { model.step(-1) }
+                .keyboardShortcut("[")
+                .disabled(model.tab != .mail)
+            Divider()
             Button("Archive") { model.moveSelection(to: "archive") }
                 .keyboardShortcut("a", modifiers: [.command, .control])
                 .disabled(model.selection.isEmpty)
@@ -75,7 +89,7 @@ struct MailCommands: Commands {
                 .keyboardShortcut(.delete, modifiers: .command)
                 .disabled(model.selection.isEmpty)
             Divider()
-            Button(model.selectedRow?.seen == false ? "Mark as Read" : "Mark as Unread") { model.toggleRead() }
+            Button(model.selectedRow?.hasUnread == true ? "Mark as Read" : "Mark as Unread") { model.toggleRead() }
                 .keyboardShortcut("u", modifiers: [.command, .shift])
                 .disabled(model.selection.isEmpty)
             Button(model.selectedRow?.flagged == true ? "Remove Flag" : "Flag") { model.toggleStar() }

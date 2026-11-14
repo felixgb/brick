@@ -18,6 +18,8 @@
 #include <QMessageBox>
 #include <QPushButton>
 #include <QScrollBar>
+#include <QListWidget>
+#include <QSet>
 #include <QSettings>
 #include <QSplitter>
 #include <QStackedWidget>
@@ -215,6 +217,19 @@ void MainWindow::buildUi() {
         a->setShortcut(QKeySequence(Qt::CTRL | (Qt::Key_1 + i)));
     }
 
+    viewMenu->addSeparator();
+    m_threadAct = viewMenu->addAction(tr("Group into &conversations"));
+    m_threadAct->setObjectName("threadAction");
+    m_threadAct->setCheckable(true);
+    m_threadAct->setChecked(QSettings().value("mail/threaded", true).toBool());
+    m_model->setThreaded(m_threadAct->isChecked());
+    connect(m_threadAct, &QAction::toggled, this, [this](bool on) {
+        QSettings().setValue("mail/threaded", on);
+        m_model->setThreaded(on);
+        clearReader();
+        updateActions();
+    });
+
     // View switcher
     QToolBar *viewBar = addToolBar(tr("View"));
     viewBar->setObjectName("viewToolBar");
@@ -265,6 +280,7 @@ void MainWindow::buildUi() {
 
     // Folder tree
     m_folders = new QTreeWidget;
+    m_folders->setObjectName("folderTree");
     m_folders->setHeaderHidden(true);
     m_folders->setRootIsDecorated(true);
     m_folders->setIndentation(14);
@@ -273,6 +289,7 @@ void MainWindow::buildUi() {
 
     // Message list
     m_list = new QTreeView;
+    m_list->setObjectName("messageList");
     m_list->setModel(m_model);
     m_list->setRootIsDecorated(false);
     m_list->setUniformRowHeights(true); // lets the view skip measuring every row
@@ -342,6 +359,23 @@ void MainWindow::buildUi() {
     connect(addInvite, &QPushButton::clicked, this, &MainWindow::addInvitation);
     m_inviteBar->hide();
     headerLayout->addWidget(m_inviteBar);
+
+    m_threadList = new QListWidget;
+    m_threadList->setObjectName("threadList");
+    m_threadList->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_threadList->setTextElideMode(Qt::ElideRight);
+    m_threadList->setFrameShape(QFrame::NoFrame);
+    m_threadList->hide();
+    headerLayout->addWidget(m_threadList);
+    connect(m_threadList, &QListWidget::itemClicked, this, [this](QListWidgetItem *item) {
+        const qint64 id = item->data(Qt::UserRole).toLongLong();
+        if (id == 0 || id == m_shownId)
+            return;
+        const bool wasRead = item->data(Qt::UserRole + 1).toBool();
+        showMessage(id, false);
+        if (!wasRead)
+            m_core->call("messages.set_flags", {{"ids", QJsonArray{double(id)}}, {"seen", true}});
+    });
 
     m_linked = new QLabel;
     m_linked->setObjectName("linkedItems");
@@ -521,6 +555,36 @@ QList<qint64> MainWindow::selectedIds() const {
     return ids;
 }
 
+QList<qint64> MainWindow::expandedIds() const {
+    QList<qint64> ids;
+    QSet<qint64> known;
+    auto add = [&](qint64 id) {
+        if (!known.contains(id)) {
+            known.insert(id);
+            ids.append(id);
+        }
+    };
+    for (const QModelIndex &index : m_list->selectionModel()->selectedRows()) {
+        const QJsonObject m = m_model->message(index.row());
+        const qint64 id = jsonId(m.value("id"));
+        add(id);
+        if (!m_model->threaded() || m.value("thread_count").toInt() < 2)
+            continue;
+        QJsonObject p{{"id", double(id)}};
+        if (m_model->isUnified())
+            p.insert("role", m_model->role());
+        else
+            p.insert("folder_id", m.value("folder_id"));
+        for (const QJsonValue &row : m_core->call("messages.thread", p).toObject().value("rows").toArray())
+            add(jsonId(row.toObject().value("id")));
+    }
+    return ids;
+}
+
+static bool isUnread(const QJsonObject &m) {
+    return m.contains("thread_unread") ? m.value("thread_unread").toInt() > 0 : !m.value("seen").toBool();
+}
+
 QJsonObject MainWindow::currentMessage() const {
     const QModelIndexList rows = m_list->selectionModel()->selectedRows();
     return rows.size() == 1 ? m_model->message(rows.first().row()) : QJsonObject();
@@ -548,6 +612,8 @@ void MainWindow::refreshMessages() {
     m_list->verticalScrollBar()->setValue(scroll);
     if (m_shownId != 0 && m_model->rowOfMessage(m_shownId) < 0 && selectedIds().isEmpty())
         clearReader();
+    else if (m_shownId != 0)
+        showThread(m_shownId);
     updateActions();
 }
 
@@ -563,8 +629,13 @@ void MainWindow::messageSelected() {
     if (id == m_shownId)
         return;
     showMessage(id, false);
-    if (!m.value("seen").toBool())
-        m_core->call("messages.set_flags", {{"ids", QJsonArray{id}}, {"seen", true}});
+    if (isUnread(m)) {
+        // Opening a conversation reads all of it.
+        QJsonArray ids;
+        for (qint64 i : expandedIds())
+            ids.append(double(i));
+        m_core->call("messages.set_flags", {{"ids", ids}, {"seen", true}});
+    }
 }
 
 void MainWindow::showMessage(qint64 id, bool allowRemote) {
@@ -578,7 +649,9 @@ void MainWindow::showMessage(qint64 id, bool allowRemote) {
     m_shownId = id;
     m_shownAllowRemote = allowRemote;
     m_shownCc = r.value("cc").toString();
+    m_shown = m;
     showLinkedItems();
+    showThread(id);
 
     const QString subject = m.value("subject").toString();
     m_subject->setText(subject.isEmpty() ? tr("(no subject)") : subject);
@@ -622,8 +695,38 @@ void MainWindow::showMessage(qint64 id, bool allowRemote) {
     m_view->showHtml(body.value("html").toString(), allowRemote);
 }
 
+void MainWindow::showThread(qint64 id) {
+    const QJsonArray rows = m_core->call("messages.thread", {{"id", double(id)}}).toObject().value("rows").toArray();
+    QSignalBlocker block(m_threadList);
+    m_threadList->clear();
+    if (rows.size() < 2) {
+        m_threadList->hide();
+        return;
+    }
+    for (const QJsonValue &v : rows) {
+        const QJsonObject m = v.toObject();
+        const qint64 mid = jsonId(m.value("id"));
+        const QDateTime when = QDateTime::fromSecsSinceEpoch(qint64(m.value("date").toDouble()));
+        auto *item = new QListWidgetItem(QStringLiteral("%1    %2    %3")
+                                             .arg(QLocale().toString(when, QStringLiteral("d MMM HH:mm")),
+                                                  senderLabel(m), m.value("snippet").toString()));
+        item->setData(Qt::UserRole, double(mid));
+        item->setData(Qt::UserRole + 1, m.value("seen").toBool());
+        QFont f = item->font();
+        f.setBold(!m.value("seen").toBool());
+        item->setFont(f);
+        m_threadList->addItem(item);
+        if (mid == id)
+            m_threadList->setCurrentItem(item);
+    }
+    m_threadList->setFixedHeight(qMin(5, int(rows.size())) * m_threadList->sizeHintForRow(0) + 6);
+    m_threadList->show();
+}
+
 void MainWindow::clearReader() {
     m_shownId = 0;
+    m_shown = QJsonObject();
+    m_threadList->hide();
     m_pendingBodyId = 0;
     m_shownText.clear();
     m_shownCc.clear();
@@ -659,7 +762,7 @@ void MainWindow::updateActions() {
     m_readAct->setEnabled(any);
     m_starAct->setEnabled(any);
     m_extractAct->setEnabled(one && m_extractingId == 0);
-    m_readAct->setText(one && !m.value("seen").toBool() ? tr("Mark read") : tr("Mark unread"));
+    m_readAct->setText(one && isUnread(m) ? tr("Mark read") : tr("Mark unread"));
     m_starAct->setText(one && m.value("flagged").toBool() ? tr("Remove star") : tr("Star"));
     m_newAct->setEnabled(!m_core->call("accounts.list").toArray().isEmpty());
 
@@ -669,14 +772,15 @@ void MainWindow::updateActions() {
     else if (m_model->isSearch())
         status = tr("%n result(s)", nullptr, m_model->rowCount());
     else
-        status = tr("%n message(s)", nullptr, m_model->rowCount());
+        status = m_model->threaded() ? tr("%n conversation(s)", nullptr, m_model->rowCount())
+                                     : tr("%n message(s)", nullptr, m_model->rowCount());
     m_statusLabel->setText(status);
 }
 
 void MainWindow::setSelectedFlags(const QJsonObject &flags) {
     QJsonArray ids;
-    for (qint64 id : selectedIds())
-        ids.append(id);
+    for (qint64 id : expandedIds())
+        ids.append(double(id));
     if (ids.isEmpty())
         return;
     QJsonObject params = flags;
@@ -689,11 +793,11 @@ void MainWindow::moveSelected(const QString &to) {
     if (rows.isEmpty())
         return;
     QJsonArray ids;
+    for (qint64 id : expandedIds())
+        ids.append(double(id));
     int lowest = rows.first().row();
-    for (const QModelIndex &index : rows) {
-        ids.append(jsonId(m_model->message(index.row()).value("id")));
+    for (const QModelIndex &index : rows)
         lowest = qMin(lowest, index.row());
-    }
     QString error;
     m_core->call("messages.move", {{"ids", ids}, {"to", to}}, &error);
     if (!error.isEmpty()) {
@@ -722,7 +826,8 @@ void MainWindow::compose(const ComposeWindow::Draft &draft) {
 }
 
 void MainWindow::reply(ReplyKind kind) {
-    const QJsonObject m = currentMessage();
+    // The message in the reader, which in a conversation may not be the one the list row shows.
+    const QJsonObject m = !m_shown.isEmpty() && !currentMessage().isEmpty() ? m_shown : currentMessage();
     if (m.isEmpty())
         return;
     const QString subject = m.value("subject").toString();

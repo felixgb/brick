@@ -21,7 +21,7 @@ background and reports back as an event.
 | Engine | Builds. Unit tests pass, and an end-to-end test passes against a real IMAP/SMTP server. |
 | C interface | Builds and runs from a C program. |
 | Linux Qt app | Builds and runs with Qt 6.8.3. Mail, To-do, Calendar (month, week, day), repeats, `.ics`, invitations, unified inbox, signatures, aliases and the Claude button, all driven and checked through the debug hook (headless, against stand-in servers). Not yet tried on a real desktop or a real mail account. |
-| macOS app | Mail builds and runs. None of the newer engine features (repeats, `.ics`, invitations, unified inbox, aliases) have a macOS interface yet. The To-do and Calendar tabs and the Claude button are written but **not yet compiled**. The calendar's slow day click was fixed in source, not yet confirmed on a Mac. |
+| macOS app | Mail builds and runs. The To-do and Calendar tabs, the Claude button and everything added since (week and day views, repeats, `.ics`, invitations, unified inbox, aliases, signatures, conversations) are written but **not yet compiled or run**. The calendar's slow day click was fixed in source, not yet confirmed on a Mac. |
 | Claude extraction | Tested against a stand-in server only; no request has been sent to the real API. |
 | Keychain storage | Compiles; not exercised (tests use the in-memory store). |
 | Gmail and Outlook sign-in | The OAuth flow is tested against a stand-in server, not against Google or Microsoft. |
@@ -68,10 +68,9 @@ retries it on another model.
 - Reminders for items
 - Calendar sync (CalDAV, Google, Outlook), and syncing items between machines
 - Repeats other than a plain daily, weekly, monthly or yearly one (every other week, on given weekdays)
-- Week, day, `.ics`, signature, alias and unified-inbox interfaces on macOS (the engine supports them)
 
 - Push (IMAP IDLE): mail is checked every two minutes and on demand
-- Conversation threading in the list
+- Grouping by subject when the headers don't link messages (threading uses Message-ID, In-Reply-To and References only)
 - HTML composing, sending attachments, drafts saved to the server
 - Fastmail over JMAP (it uses IMAP for now)
 - Undo for archive, trash and move (needs an engine change: a moved message disappears locally until the next sync)

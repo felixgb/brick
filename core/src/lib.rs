@@ -18,5 +18,6 @@ pub mod secrets;
 pub mod smtp;
 pub mod store;
 pub mod sync;
+pub mod threads;
 
 pub use engine::Engine;

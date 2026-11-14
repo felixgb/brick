@@ -20,10 +20,18 @@ struct ItemRowView: View {
             .accessibilityLabel(item.done ? "Mark as not done" : "Mark as done")
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(item.title)
-                    .strikethrough(item.done)
-                    .foregroundStyle(item.done ? .secondary : .primary)
-                    .lineLimit(2)
+                HStack(spacing: 4) {
+                    Text(item.title)
+                        .strikethrough(item.done)
+                        .foregroundStyle(item.done ? .secondary : .primary)
+                        .lineLimit(2)
+                    if item.isRepeating {
+                        Image(systemName: "repeat")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .help(item.repeatLabel ?? "Repeats")
+                    }
+                }
                 if let detail {
                     Text(detail)
                         .font(.subheadline)
@@ -73,6 +81,10 @@ struct ItemWhenFields: View {
         Toggle("On a day", isOn: hasDay)
         if item.date != nil {
             DatePicker("Day", selection: day, displayedComponents: .date)
+            Toggle("Ends on another day", isOn: hasEndDay)
+            if item.endDate != nil {
+                DatePicker("Ends on", selection: endDay, in: dayAfter..., displayedComponents: .date)
+            }
             Toggle("At a time", isOn: hasStart)
             if item.startTime != nil {
                 DatePicker("Starts", selection: time(\.startTime), displayedComponents: .hourAndMinute)
@@ -81,6 +93,67 @@ struct ItemWhenFields: View {
                     DatePicker("Ends", selection: time(\.endTime), displayedComponents: .hourAndMinute)
                 }
             }
+            Picker("Repeat", selection: repeatRule) {
+                Text("Never").tag("")
+                Text("Every day").tag("daily")
+                Text("Every week").tag("weekly")
+                Text("Every month").tag("monthly")
+                Text("Every year").tag("yearly")
+            }
+            if item.isRepeating {
+                Toggle("Until", isOn: hasUntil)
+                if item.repeatUntil != nil {
+                    DatePicker("Last day", selection: until, in: dayStart..., displayedComponents: .date)
+                }
+            }
+        }
+    }
+
+    private var dayStart: Date { item.date.flatMap(Day.date) ?? .now }
+
+    private var dayAfter: Date {
+        Calendar.current.date(byAdding: .day, value: 1, to: dayStart) ?? dayStart
+    }
+
+    private var hasEndDay: Binding<Bool> {
+        Binding {
+            item.endDate != nil
+        } set: { on in
+            item.endDate = on ? Day.string(dayAfter) : nil
+        }
+    }
+
+    private var endDay: Binding<Date> {
+        Binding {
+            item.endDate.flatMap(Day.date) ?? dayAfter
+        } set: { new in
+            item.endDate = Day.string(new)
+        }
+    }
+
+    private var repeatRule: Binding<String> {
+        Binding {
+            item.repeat
+        } set: { rule in
+            item.repeat = rule
+            if rule.isEmpty { item.repeatUntil = nil }
+        }
+    }
+
+    private var hasUntil: Binding<Bool> {
+        Binding {
+            item.repeatUntil != nil
+        } set: { on in
+            let year = Calendar.current.date(byAdding: .year, value: 1, to: dayStart) ?? dayStart
+            item.repeatUntil = on ? Day.string(year) : nil
+        }
+    }
+
+    private var until: Binding<Date> {
+        Binding {
+            item.repeatUntil.flatMap(Day.date) ?? dayStart
+        } set: { new in
+            item.repeatUntil = Day.string(new)
         }
     }
 
@@ -95,6 +168,8 @@ struct ItemWhenFields: View {
                 item.endDate = nil
                 item.startTime = nil
                 item.endTime = nil
+                item.repeat = ""
+                item.repeatUntil = nil
             }
         }
     }
@@ -106,6 +181,7 @@ struct ItemWhenFields: View {
             item.date = Day.string(new)
             // A span that would now end before it starts no longer makes sense.
             if let end = item.endDate, end <= Day.string(new) { item.endDate = nil }
+            if let last = item.repeatUntil, last < Day.string(new) { item.repeatUntil = Day.string(new) }
         }
     }
 

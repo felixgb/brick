@@ -29,6 +29,8 @@ struct RootView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if let banner = model.banner {
                 BannerView(text: banner) { model.banner = nil }
+            } else if let notice = model.notice {
+                BannerView(text: notice, symbol: "checkmark.circle.fill", tint: .green) { model.notice = nil }
             }
         }
         .sheet(item: $model.editingItem) { item in
@@ -62,6 +64,8 @@ struct MainView: View {
             ToolbarItemGroup(placement: .navigation) {
                 Button("Get Mail", systemImage: "arrow.clockwise") { model.syncNow() }
                     .help("Get new mail")
+                Toggle("Conversations", systemImage: "text.bubble", isOn: $model.threaded)
+                    .help(model.threaded ? "Show every message separately" : "Group messages into conversations")
             }
             ToolbarItemGroup(placement: .primaryAction) {
                 Button("New Message", systemImage: "square.and.pencil") {
@@ -88,7 +92,8 @@ struct MainView: View {
                     .help("Move to Trash")
             }
         }
-        .navigationTitle(model.isSearching ? "Search" : (model.folder(model.selectedFolder)?.name ?? "Brick"))
+        .navigationTitle(
+            model.isSearching ? "Search" : (model.isUnified ? "All Inboxes" : (model.folder(model.selectedFolder)?.name ?? "Brick")))
         .navigationSubtitle(subtitle)
         .overlay {
             if let error = model.startupError {
@@ -113,6 +118,11 @@ struct MainView: View {
     private var subtitle: String {
         if model.syncing > 0 { return "Checking mail…" }
         if model.isSearching { return "\(model.total) results" }
+        if model.isUnified {
+            let unread = model.folders.values.joined().filter { $0.role == "inbox" }.reduce(0) { $0 + $1.unread }
+            let noun = model.threaded ? "conversations" : "messages"
+            return unread > 0 ? "\(model.total) \(noun), \(unread) unread" : "\(model.total) \(noun)"
+        }
         if let folder = model.folder(model.selectedFolder) {
             return folder.unread > 0 ? "\(folder.total) messages, \(folder.unread) unread" : "\(folder.total) messages"
         }
@@ -128,11 +138,13 @@ struct MainView: View {
 
 struct BannerView: View {
     let text: String
+    var symbol = "exclamationmark.triangle.fill"
+    var tint: Color = .yellow
     let dismiss: () -> Void
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.yellow)
+            Image(systemName: symbol).foregroundStyle(tint)
             Text(text).lineLimit(2)
             Spacer()
             Button("Dismiss", systemImage: "xmark", action: dismiss)
@@ -154,6 +166,11 @@ struct SidebarView: View {
         @Bindable var model = model
 
         List(selection: $model.selectedFolder) {
+            if model.accounts.count > 1 {
+                Label("All Inboxes", systemImage: "tray.2")
+                    .badge(model.folders.values.joined().filter { $0.role == "inbox" }.reduce(0) { $0 + $1.unread })
+                    .tag(Optional(AppModel.allInboxes))
+            }
             ForEach(model.accounts) { account in
                 Section(account.email) {
                     ForEach(model.folders[account.id] ?? []) { folder in
@@ -184,10 +201,10 @@ struct MessageListView: View {
         .listStyle(.inset)
         .contextMenu(forSelectionType: Int64.self) { ids in
             if !ids.isEmpty {
-                Button("Mark as Read") { model.setFlags(ids, seen: true) }
-                Button("Mark as Unread") { model.setFlags(ids, seen: false) }
-                Button("Flag") { model.setFlags(ids, flagged: true) }
-                Button("Remove Flag") { model.setFlags(ids, flagged: false) }
+                Button("Mark as Read") { model.setFlags(model.expanded(ids), seen: true) }
+                Button("Mark as Unread") { model.setFlags(model.expanded(ids), seen: false) }
+                Button("Flag") { model.setFlags(model.expanded(ids), flagged: true) }
+                Button("Remove Flag") { model.setFlags(model.expanded(ids), flagged: false) }
                 Divider()
                 Button("Archive") {
                     model.selection = ids
@@ -200,6 +217,16 @@ struct MessageListView: View {
             }
         }
         .onDeleteCommand { model.moveSelection(to: "trash") }
+        // J and K, as in most mail clients. Handled here, not as menu shortcuts,
+        // so they never fire while typing in a text field.
+        .onKeyPress("j") {
+            model.step(1)
+            return .handled
+        }
+        .onKeyPress("k") {
+            model.step(-1)
+            return .handled
+        }
         .overlay {
             if model.rows.isEmpty && !model.accounts.isEmpty {
                 if model.isSearching {
@@ -218,17 +245,25 @@ struct MessageRowView: View {
     var body: some View {
         HStack(alignment: .top, spacing: 6) {
             Circle()
-                .fill(row.seen ? Color.clear : Color.accentColor)
+                .fill(row.hasUnread ? Color.accentColor : Color.clear)
                 .frame(width: 8, height: 8)
                 .padding(.top, 5)
-                .accessibilityLabel(row.seen ? "" : "Unread")
+                .accessibilityLabel(row.hasUnread ? "Unread" : "")
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(alignment: .firstTextBaseline) {
                     Text(row.sender)
                         .font(.headline)
-                        .fontWeight(row.seen ? .regular : .semibold)
+                        .fontWeight(row.hasUnread ? .semibold : .regular)
                         .lineLimit(1)
+                    if row.messagesInThread > 1 {
+                        Text("\(row.messagesInThread)")
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 5)
+                            .background(.quaternary, in: Capsule())
+                            .help("\(row.messagesInThread) messages in this conversation")
+                    }
                     Spacer(minLength: 8)
                     if row.flagged {
                         Image(systemName: "flag.fill").foregroundStyle(.orange).font(.caption)

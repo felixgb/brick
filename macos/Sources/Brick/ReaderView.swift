@@ -4,13 +4,22 @@ import WebKit
 struct ReaderView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openSettings) private var openSettings
+    @State private var showThread = false
 
     var body: some View {
         if let detail = model.detail {
             VStack(spacing: 0) {
                 header(detail)
                 Divider()
+                if model.thread.count > 1 {
+                    threadStrip(detail)
+                    Divider()
+                }
                 if let body = detail.body {
+                    if body.hasInvitation {
+                        invitationBar
+                        Divider()
+                    }
                     if body.blockedRemote {
                         remoteImagesBar
                         Divider()
@@ -116,6 +125,79 @@ struct ReaderView: View {
             Spacer(minLength: 0)
         }
         .padding(.top, 4)
+    }
+
+    /// The other messages of this conversation, one click away.
+    private func threadStrip(_ detail: MessageDetail) -> some View {
+        VStack(spacing: 0) {
+            Button {
+                showThread.toggle()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: showThread ? "chevron.down" : "chevron.right")
+                        .font(.caption)
+                        .frame(width: 10)
+                    Text("Conversation, \(model.thread.count) messages")
+                    Spacer()
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .font(.callout)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 6)
+
+            if showThread {
+                ScrollView {
+                    VStack(spacing: 0) {
+                        ForEach(model.thread) { message in
+                            let current = message.id == detail.message.id
+                            Button {
+                                model.openInThread(message.id)
+                            } label: {
+                                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                    Circle()
+                                        .fill(message.seen ? Color.clear : Color.accentColor)
+                                        .frame(width: 7, height: 7)
+                                    Text(message.sender)
+                                        .fontWeight(current ? .semibold : .regular)
+                                        .lineLimit(1)
+                                        .frame(width: 140, alignment: .leading)
+                                    Text(message.snippet)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                    Spacer(minLength: 8)
+                                    Text(MessageRowView.short(message.when))
+                                        .foregroundStyle(.secondary)
+                                }
+                                .font(.callout)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 4)
+                                .background(current ? Color.accentColor.opacity(0.15) : Color.clear)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                .frame(maxHeight: 150)
+            }
+        }
+        .background(.bar)
+    }
+
+    private var invitationBar: some View {
+        HStack {
+            Image(systemName: "calendar.badge.plus").foregroundStyle(.secondary)
+            Text("This email has a calendar invitation.")
+                .foregroundStyle(.secondary)
+            Spacer()
+            Button("Add to calendar") { model.addInvitation() }
+        }
+        .font(.callout)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 6)
+        .background(.bar)
     }
 
     private var remoteImagesBar: some View {

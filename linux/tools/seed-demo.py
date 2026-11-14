@@ -96,7 +96,26 @@ for mid, name, addr, subject, text, ago, seen in work:
     db.execute("INSERT INTO bodies (message_id, raw) VALUES (?,?)", (mid, raw))
     db.execute("INSERT INTO messages_fts (rowid, subject, sender, recipients, body) VALUES (?,?,?,?,?)",
                (mid, subject, f"{name} {addr}", "sam@work.example", text))
-db.execute("UPDATE folders SET unread=1, total=2 WHERE id=6")
+# A conversation: two replies to the first work message, linked by headers only.
+replies = [
+    (20, "Sam Rivera", "sam@work.example", "Re: Quarterly numbers are in", "Thanks, looking now.", 20 * 60, 1, "<demo6@work>", "<demo6@work>"),
+    (21, "Dev Patel", "dev@work.example", "Re: Quarterly numbers are in", "Great. Can you check the Q3 column?", 10 * 60, 0, "<demo20@work>", "<demo6@work> <demo20@work>"),
+]
+for mid, name, addr, subject, text, ago, seen, reply_to, refs in replies:
+    raw = (f"From: {name} <{addr}>\r\nTo: sam@work.example\r\nSubject: {subject}\r\nMessage-ID: <demo{mid}@work>\r\n"
+           f"In-Reply-To: {reply_to}\r\nReferences: {refs}\r\n"
+           f"Content-Type: text/plain; charset=utf-8\r\n\r\n{text}\r\n").encode()
+    db.execute(
+        "INSERT INTO messages (id, account_id, folder_id, uid, message_id, in_reply_to, refs, subject, from_name,"
+        " from_addr, to_text, date, size, seen, flagged, snippet) VALUES (?,2,6,?,?,?,?,?,?,?,'sam@work.example',?,?,?,0,?)",
+        (mid, mid, f"demo{mid}@work", reply_to.strip("<>"), refs.replace("<", "").replace(">", ""),
+         subject, name, addr, now - ago, len(raw), seen, text))
+    db.execute("INSERT INTO bodies (message_id, raw) VALUES (?,?)", (mid, raw))
+    db.execute("INSERT INTO messages_fts (rowid, subject, sender, recipients, body) VALUES (?,?,?,?,?)",
+               (mid, subject, f"{name} {addr}", "sam@work.example", text))
+# The engine stores ids without angle brackets, as the mail parser gives them.
+db.execute("UPDATE messages SET message_id = replace(replace(message_id, '<', ''), '>', '')")
+db.execute("UPDATE folders SET unread=2, total=4 WHERE id=6")
 
 unread = sum(1 for m in mails if not m[5]) + 1
 db.execute("UPDATE folders SET unread=?, total=? WHERE id=1", (unread, len(mails) + 1))

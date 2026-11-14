@@ -99,6 +99,17 @@ pub struct MessageRow {
     pub snippet: String,
 }
 
+/// A conversation in a list: its newest message, with how many messages the
+/// conversation has in the list and how many of those are unread.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThreadRow {
+    #[serde(flatten)]
+    pub message: MessageRow,
+    pub thread_id: i64,
+    pub thread_count: i64,
+    pub thread_unread: i64,
+}
+
 /// Header-level data for a message as it arrives from the server.
 #[derive(Debug, Clone, Default)]
 pub struct NewMessage {

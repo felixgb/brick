@@ -78,6 +78,30 @@ END;
 const ROW_COLS: &str = "id, account_id, folder_id, uid, subject, from_name, from_addr, to_text, \
                         date, seen, flagged, answered, has_attachments, snippet";
 
+/// Which messages a list covers.
+pub enum Scope {
+    Folder(i64),
+    /// Every folder with this role, across accounts.
+    Role(String),
+}
+
+impl Scope {
+    /// SQL condition on messages aliased `alias`; the value is parameter `?n`.
+    fn sql(&self, alias: &str, n: usize) -> String {
+        match self {
+            Scope::Folder(_) => format!("{alias}.folder_id = ?{n}"),
+            Scope::Role(_) => format!("{alias}.folder_id IN (SELECT id FROM folders WHERE role = ?{n})"),
+        }
+    }
+
+    fn key(&self) -> rusqlite::types::Value {
+        match self {
+            Scope::Folder(id) => (*id).into(),
+            Scope::Role(role) => role.clone().into(),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Store {
     conn: Arc<Mutex<Connection>>,
@@ -151,6 +175,7 @@ impl Store {
         conn.execute_batch(SCHEMA)?;
         conn.execute_batch(crate::items::SCHEMA)?;
         crate::items::migrate(&conn)?;
+        crate::threads::migrate(&conn)?;
         Ok(Self { conn: Arc::new(Mutex::new(conn)) })
     }
 
@@ -393,6 +418,7 @@ impl Store {
                 if n > 0 {
                     inserted += 1;
                     let id = tx.last_insert_rowid();
+                    crate::threads::assign(&tx, id, account_id, &m.message_id, &m.in_reply_to, &m.references)?;
                     fts.execute(params![
                         id,
                         m.subject,
@@ -494,6 +520,58 @@ impl Store {
     pub fn aliases(&self, account_id: i64) -> Result<Vec<String>> {
         let raw = self.setting(&format!("aliases_{account_id}"))?.unwrap_or_default();
         Ok(raw.split([',', ';', '\n', ' ']).map(str::trim).filter(|a| !a.is_empty()).map(String::from).collect())
+    }
+
+    /// One row per conversation in a folder (or in every folder of a role),
+    /// newest conversation first. Each row is the conversation's newest message.
+    pub fn list_threads(&self, scope: &Scope, offset: i64, limit: i64) -> Result<Vec<ThreadRow>> {
+        let (m, x) = (scope.sql("m", 1), scope.sql("x", 1));
+        let cols = ROW_COLS.split(',').map(|c| format!("m.{}", c.trim())).collect::<Vec<_>>().join(", ");
+        let db = self.db();
+        let mut st = db.prepare_cached(&format!(
+            "SELECT {cols}, m.thread_id,
+                    (SELECT COUNT(*) FROM messages x WHERE x.thread_id = m.thread_id AND {x}),
+                    (SELECT COUNT(*) FROM messages x WHERE x.thread_id = m.thread_id AND x.seen = 0 AND {x})
+             FROM messages m
+             WHERE {m} AND m.id = (SELECT x.id FROM messages x WHERE x.thread_id = m.thread_id AND {x}
+                                   ORDER BY x.date DESC, x.id DESC LIMIT 1)
+             ORDER BY m.date DESC, m.id DESC LIMIT ?3 OFFSET ?2"
+        ))?;
+        let rows = st
+            .query_map(params![scope.key(), offset, limit], |r| {
+                Ok(ThreadRow {
+                    message: row_to_message(r)?,
+                    thread_id: r.get(14)?,
+                    thread_count: r.get(15)?,
+                    thread_unread: r.get(16)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub fn count_threads(&self, scope: &Scope) -> Result<i64> {
+        Ok(self.db().query_row(
+            &format!("SELECT COUNT(DISTINCT m.thread_id) FROM messages m WHERE {}", scope.sql("m", 1)),
+            [scope.key()],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// Every message in the conversation `id` belongs to, oldest first: in
+    /// every folder of its account, or only those a scope covers.
+    pub fn thread_of(&self, id: i64, scope: Option<&Scope>) -> Result<Vec<MessageRow>> {
+        let db = self.db();
+        let limit = scope.map(|s| format!(" AND {}", s.sql("messages", 2))).unwrap_or_default();
+        let mut st = db.prepare(&format!(
+            "SELECT {ROW_COLS} FROM messages
+             WHERE thread_id = (SELECT thread_id FROM messages WHERE id = ?1){limit} ORDER BY date, id"
+        ))?;
+        let rows = match scope {
+            Some(scope) => st.query_map(params![id, scope.key()], row_to_message)?.collect::<rusqlite::Result<Vec<_>>>()?,
+            None => st.query_map([id], row_to_message)?.collect::<rusqlite::Result<Vec<_>>>()?,
+        };
+        Ok(rows)
     }
 
     pub fn count_messages(&self, folder_id: i64) -> Result<i64> {
@@ -714,5 +792,86 @@ mod tests {
         assert!(s.aliases(a).unwrap().is_empty());
         s.set_setting(&format!("aliases_{a}"), "me@work.example, shop@example.com;\nx@y.example").unwrap();
         assert_eq!(s.aliases(a).unwrap(), ["me@work.example", "shop@example.com", "x@y.example"]);
+    }
+
+    fn threaded(uid: u32, id: &str, reply_to: &str, refs: &str) -> NewMessage {
+        NewMessage {
+            message_id: id.into(),
+            in_reply_to: reply_to.into(),
+            references: refs.into(),
+            ..msg(uid, &format!("m{uid}"))
+        }
+    }
+
+    #[test]
+    fn replies_join_their_conversation_whatever_order_they_arrive_in() {
+        let s = Store::open_in_memory().unwrap();
+        let a = s.add_account(&account()).unwrap();
+        let inbox = s.upsert_folder(a, "INBOX", "Inbox", "inbox", true).unwrap();
+        let sent = s.upsert_folder(a, "Sent", "Sent", "sent", true).unwrap();
+
+        // The reply is synced before the message it answers; a stranger sits between.
+        s.insert_messages(a, inbox, &[threaded(2, "b@x", "a@x", "a@x")]).unwrap();
+        s.insert_messages(a, inbox, &[threaded(3, "other@x", "", "")]).unwrap();
+        s.insert_messages(a, inbox, &[threaded(1, "a@x", "", "")]).unwrap();
+        // My own answer is in another folder; it still belongs to the conversation.
+        s.insert_messages(a, sent, &[threaded(5, "c@x", "b@x", "a@x b@x")]).unwrap();
+
+        let rows = s.list_threads(&Scope::Folder(inbox), 0, 10).unwrap();
+        assert_eq!(s.count_threads(&Scope::Folder(inbox)).unwrap(), 2);
+        assert_eq!(rows.len(), 2);
+        let convo = rows.iter().find(|r| r.thread_count == 2).expect("two messages in this folder");
+        assert_eq!(convo.message.uid, 2, "the newest message in the folder represents it");
+        assert_eq!(convo.thread_unread, 2);
+        assert_eq!(rows.iter().find(|r| r.thread_count == 1).unwrap().message.uid, 3);
+
+        let all = s.thread_of(convo.message.id, None).unwrap();
+        assert_eq!(all.iter().map(|m| m.uid).collect::<Vec<_>>(), vec![1, 2, 5], "oldest first, across folders");
+        assert_eq!(s.thread_of(all[2].id, None).unwrap().len(), 3, "same from any member");
+        let here = s.thread_of(convo.message.id, Some(&Scope::Folder(inbox))).unwrap();
+        assert_eq!(here.iter().map(|m| m.uid).collect::<Vec<_>>(), vec![1, 2], "only the folder asked about");
+        assert_eq!(s.thread_of(convo.message.id, Some(&Scope::Role("sent".into()))).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_message_that_bridges_two_conversations_merges_them() {
+        let s = Store::open_in_memory().unwrap();
+        let a = s.add_account(&account()).unwrap();
+        let f = s.upsert_folder(a, "INBOX", "Inbox", "inbox", true).unwrap();
+        s.insert_messages(a, f, &[threaded(1, "a@x", "", ""), threaded(2, "z@x", "", "")]).unwrap();
+        assert_eq!(s.count_threads(&Scope::Folder(f)).unwrap(), 2);
+        s.insert_messages(a, f, &[threaded(3, "m@x", "z@x", "a@x z@x")]).unwrap();
+        assert_eq!(s.count_threads(&Scope::Folder(f)).unwrap(), 1);
+        assert_eq!(s.list_threads(&Scope::Folder(f), 0, 10).unwrap()[0].thread_count, 3);
+    }
+
+    #[test]
+    fn conversations_never_cross_accounts_or_guess_from_subjects() {
+        let s = Store::open_in_memory().unwrap();
+        let a = s.add_account(&account()).unwrap();
+        let b = s.add_account(&Account { email: "b@example.com".into(), ..account() }).unwrap();
+        let (fa, fb) = (
+            s.upsert_folder(a, "INBOX", "Inbox", "inbox", true).unwrap(),
+            s.upsert_folder(b, "INBOX", "Inbox", "inbox", true).unwrap(),
+        );
+        s.insert_messages(a, fa, &[threaded(1, "a@x", "", ""), msg(2, "m1")]).unwrap();
+        s.insert_messages(b, fb, &[threaded(1, "r@x", "a@x", "a@x")]).unwrap();
+        assert_eq!(s.count_threads(&Scope::Role("inbox".into())).unwrap(), 3);
+    }
+
+    #[test]
+    fn existing_databases_are_threaded_on_open() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn.execute_batch(
+            "INSERT INTO accounts(id, email, name, provider, imap_host, imap_port, imap_security, smtp_host, smtp_port, smtp_security, auth, username)
+               VALUES (1, 'a@example.com', '', 'imap', 'h', 993, 'tls', 'h', 465, 'tls', 'password', 'a');
+             INSERT INTO folders(id, account_id, path, name, role, selectable) VALUES (1, 1, 'INBOX', 'Inbox', 'inbox', 1);
+             INSERT INTO messages(account_id, folder_id, uid, message_id, in_reply_to, refs, date) VALUES
+               (1, 1, 1, 'a@x', '', '', 1), (1, 1, 2, 'b@x', 'a@x', 'a@x', 2);",
+        )
+        .unwrap();
+        let s = Store::init(conn).unwrap();
+        assert_eq!(s.count_threads(&Scope::Folder(1)).unwrap(), 1);
     }
 }
