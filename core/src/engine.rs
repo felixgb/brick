@@ -7,10 +7,11 @@
 
 use crate::imap::Credential;
 use crate::model::{Account, AuthKind, Security};
-use crate::secrets::{self, KeyringStore, MemoryStore, SecretStore};
+use crate::secrets::{self, MemoryStore, SecretStore};
 use crate::store::{Scope, Store};
 use crate::sync::{self, Emit, Inner};
 use crate::items::{self, Item};
+use crate::config::{self, ConfigFile, SecretStoreKind};
 use crate::{claude, ics, mime, oauth, providers, smtp};
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
@@ -35,23 +36,55 @@ fn opt<T: for<'de> Deserialize<'de>>(params: &Value, key: &str) -> Option<T> {
 
 impl Engine {
     /// Opens (or creates) the mail store in `data_dir` and starts background sync.
+    /// Settings come from `config.toml` there (or `BRICK_CONFIG`); see config.rs.
     pub fn open(data_dir: &Path, emit: Emit) -> Result<Self> {
-        let secrets: Arc<dyn SecretStore> = match std::env::var("BRICK_SECRETS").as_deref() {
-            Ok("memory") => Arc::new(MemoryStore::default()),
-            _ => Arc::new(KeyringStore::new("brick-mail")),
+        std::fs::create_dir_all(data_dir).with_context(|| format!("could not create {}", data_dir.display()))?;
+        let config = ConfigFile::open(&config::default_path(data_dir))?;
+        // BRICK_SECRETS overrides secrets.store, so tools can run against a throwaway store.
+        let kind = match std::env::var("BRICK_SECRETS") {
+            Ok(v) if !v.trim().is_empty() => v.parse::<SecretStoreKind>().context("BRICK_SECRETS")?,
+            _ => config.get().secrets.store,
         };
-        Self::open_with(data_dir, secrets, emit)
+        let file_store = || -> Result<Arc<dyn SecretStore>> {
+            #[cfg(unix)]
+            return Ok(Arc::new(secrets::FileStore::open(&data_dir.join("secrets.json"))?));
+            #[cfg(not(unix))]
+            bail!("secrets.store = \"file\" is not supported on this system");
+        };
+        let secrets: Arc<dyn SecretStore> = match kind {
+            SecretStoreKind::Memory => Arc::new(MemoryStore::default()),
+            SecretStoreKind::File => file_store()?,
+            #[cfg(target_os = "macos")]
+            SecretStoreKind::Auto | SecretStoreKind::Keychain => Arc::new(secrets::KeyringStore::new("brick-mail")),
+            // Linux: a private file next to the database, not the Secret Service.
+            #[cfg(not(target_os = "macos"))]
+            SecretStoreKind::Auto => file_store()?,
+            #[cfg(not(target_os = "macos"))]
+            SecretStoreKind::Keychain => bail!("secrets.store = \"keychain\" is only available on macOS"),
+        };
+        Self::start(data_dir, config, secrets, emit)
     }
 
     pub fn open_with(data_dir: &Path, secrets: Arc<dyn SecretStore>, emit: Emit) -> Result<Self> {
         std::fs::create_dir_all(data_dir).with_context(|| format!("could not create {}", data_dir.display()))?;
+        let config = ConfigFile::open(&config::default_path(data_dir))?;
+        Self::start(data_dir, config, secrets, emit)
+    }
+
+    fn start(data_dir: &Path, config: ConfigFile, secrets: Arc<dyn SecretStore>, emit: Emit) -> Result<Self> {
         let store = Store::open(&data_dir.join("brick.sqlite"))?;
+        // Older versions kept settings in the database; move them to config.toml.
+        let legacy = store.legacy_settings()?;
+        if !legacy.is_empty() {
+            let moved = config.adopt_legacy(&legacy);
+            store.delete_legacy_settings(&moved)?;
+        }
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .thread_name("brick-core")
             .enable_all()
             .build()?;
-        let inner = Arc::new(Inner::new(store, secrets, emit));
+        let inner = Arc::new(Inner::new(store, secrets, config, emit));
         runtime.spawn(sync::run(inner.clone()));
         Ok(Self { runtime, inner })
     }
@@ -75,10 +108,14 @@ impl Engine {
         Ok(match method {
             "providers.list" => json!(providers::all()),
 
-            "settings.get" => json!(store.setting(&param::<String>(p, "key")?)?),
+            "settings.get" => json!(self.inner.config.setting(&param::<String>(p, "key")?)?),
             "settings.set" => {
-                store.set_setting(&param::<String>(p, "key")?, &param::<String>(p, "value")?)?;
+                self.inner.config.set_setting(&param::<String>(p, "key")?, &param::<String>(p, "value")?)?;
                 Value::Null
+            }
+            "config.status" => {
+                let c = &self.inner.config;
+                json!({ "path": c.path().display().to_string(), "error": c.error() })
             }
 
             "accounts.list" => json!(store.accounts()?),
@@ -88,6 +125,9 @@ impl Engine {
                 let id: i64 = param(p, "id")?;
                 store.remove_account(id)?;
                 self.inner.forget_account(id);
+                if let Err(e) = self.inner.config.remove_account(id) {
+                    log::warn!("{e:#}");
+                }
                 let _ = self.inner.secrets.delete(&secrets::password_key(id));
                 let _ = self.inner.secrets.delete(&secrets::refresh_token_key(id));
                 self.inner.emit(json!({ "type": "accounts_changed" }));
@@ -159,7 +199,7 @@ impl Engine {
                 let token = opt::<String>(p, "token").unwrap_or_default();
                 // Catch address mistakes now, while the compose window is still open.
                 let acc = store.account(draft.account_id)?.ok_or_else(|| anyhow!("choose an account to send from"))?;
-                smtp::check_sender(&acc, &store.aliases(acc.id)?, &draft)?;
+                smtp::check_sender(&acc, &self.inner.config.get().aliases(acc.id), &draft)?;
                 smtp::build(&acc, &draft, None)?;
                 let inner = self.inner.clone();
                 self.runtime.spawn(async move {
@@ -256,10 +296,7 @@ impl Engine {
 
             "claude.status" => {
                 let configured = self.inner.secrets.get(claude::KEY_SECRET)?.is_some_and(|k| !k.trim().is_empty());
-                let model = store
-                    .setting(claude::MODEL_SETTING)?
-                    .filter(|m| !m.trim().is_empty())
-                    .unwrap_or_else(|| claude::DEFAULT_MODEL.to_string());
+                let model = self.inner.config.get().claude.model().to_string();
                 json!({ "configured": configured, "model": model, "default_model": claude::DEFAULT_MODEL })
             }
             "claude.set_key" => {

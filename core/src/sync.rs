@@ -6,6 +6,7 @@ use crate::imap::{self, Credential, Session};
 use crate::model::{Account, AuthKind, Folder};
 use crate::oauth::{self, ClientCreds, Tokens};
 use crate::providers::{self, OAuthEndpoints};
+use crate::config::ConfigFile;
 use crate::secrets::{self, SecretStore};
 use crate::store::Store;
 use crate::items::Item;
@@ -17,29 +18,23 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex as AsyncMutex, Notify, OwnedMutexGuard};
 
-/// Messages fetched when a folder is first seen.
-const INITIAL_WINDOW: u32 = 300;
-/// UIDs of history examined per pass after that.
-const BACKFILL_CHUNK: u32 = 500;
-/// How far back flag changes and deletions are checked on a routine pass.
-const RECONCILE_WINDOW: u32 = 2000;
-/// Inbox bodies downloaded ahead of time so opening them is instant.
-const PREFETCH_BODIES: i64 = 30;
-const STEP_TIMEOUT: Duration = Duration::from_secs(120);
-const POLL_INTERVAL: Duration = Duration::from_secs(120);
+// Sync windows, timeouts and the poll interval come from config.toml ([sync],
+// [network]); see config.rs for what each one means.
 
 pub type Emit = Arc<dyn Fn(String) + Send + Sync>;
 
 pub struct Conn {
     session: Option<Session>,
     last_used: Instant,
+    /// sync.step_timeout_secs, refreshed each time the connection is handed out.
+    timeout: Duration,
 }
 
 /// Runs one IMAP exchange with a timeout. A failure drops the connection so
 /// the next caller reconnects instead of reusing a broken session.
 macro_rules! step {
     ($conn:ident, |$s:ident| $body:expr) => {{
-        let r: Result<_> = match tokio::time::timeout(STEP_TIMEOUT, async {
+        let r: Result<_> = match tokio::time::timeout($conn.timeout, async {
             let $s = $conn.session.as_mut().ok_or_else(|| anyhow!("not connected"))?;
             $body
         })
@@ -59,6 +54,7 @@ macro_rules! step {
 pub struct Inner {
     pub store: Store,
     pub secrets: Arc<dyn SecretStore>,
+    pub config: ConfigFile,
     emit: Emit,
     conns: Mutex<HashMap<i64, Arc<AsyncMutex<Conn>>>>,
     tokens: Mutex<HashMap<i64, Tokens>>,
@@ -67,10 +63,11 @@ pub struct Inner {
 }
 
 impl Inner {
-    pub fn new(store: Store, secrets: Arc<dyn SecretStore>, emit: Emit) -> Self {
+    pub fn new(store: Store, secrets: Arc<dyn SecretStore>, config: ConfigFile, emit: Emit) -> Self {
         Self {
             store,
             secrets,
+            config,
             emit,
             conns: Mutex::new(HashMap::new()),
             tokens: Mutex::new(HashMap::new()),
@@ -102,11 +99,11 @@ impl Inner {
 
     pub fn client_creds(&self, ep: &OAuthEndpoints) -> Result<ClientCreds> {
         let id = self
-            .store
+            .config
             .setting(ep.client_id_key)?
             .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| anyhow!("no OAuth client ID is configured for this provider; add one in Settings"))?;
-        let secret = self.store.setting(ep.client_secret_key)?.filter(|s| !s.trim().is_empty());
+        let secret = self.config.setting(ep.client_secret_key)?.filter(|s| !s.trim().is_empty());
         Ok(ClientCreds { id: id.trim().to_string(), secret: secret.map(|s| s.trim().to_string()) })
     }
 
@@ -158,9 +155,11 @@ impl Inner {
             .lock()
             .unwrap()
             .entry(acc.id)
-            .or_insert_with(|| Arc::new(AsyncMutex::new(Conn { session: None, last_used: Instant::now() })))
+            .or_insert_with(|| Arc::new(AsyncMutex::new(Conn { session: None, last_used: Instant::now(), timeout: Duration::ZERO })))
             .clone();
         let mut conn = slot.lock_owned().await;
+        let cfg = self.config.get();
+        conn.timeout = Duration::from_secs(cfg.sync.step_timeout_secs);
 
         if conn.session.is_some() && conn.last_used.elapsed() > Duration::from_secs(45) {
             let alive = tokio::time::timeout(Duration::from_secs(10), conn.session.as_mut().unwrap().noop()).await;
@@ -170,7 +169,7 @@ impl Inner {
         }
         if conn.session.is_none() {
             let cred = self.credential(acc).await?;
-            match imap::connect(acc, &cred).await {
+            match imap::connect(acc, &cred, Duration::from_secs(cfg.network.imap_connect_timeout_secs)).await {
                 Ok(s) => conn.session = Some(s),
                 Err(e) => {
                     // A rejected token may have been revoked; force a refresh next time.
@@ -238,6 +237,7 @@ impl Inner {
 
     async fn sync_folder(&self, acc: &Account, folder: &Folder, thorough: bool) -> Result<bool> {
         let store = &self.store;
+        let cfg = self.config.get();
         let mut changed = false;
         let mut pending = false;
 
@@ -263,8 +263,8 @@ impl Inner {
             // New mail (or the newest window on first visit).
             let lo = if max > 0 {
                 max + 1
-            } else if sel.uid_next > INITIAL_WINDOW {
-                sel.uid_next - INITIAL_WINDOW
+            } else if sel.uid_next > cfg.sync.initial_window {
+                sel.uid_next - cfg.sync.initial_window
             } else {
                 1
             };
@@ -278,7 +278,7 @@ impl Inner {
             // Flag changes and deletions made elsewhere.
             if max > 0 {
                 let floor = store.min_uid(folder.id)?;
-                let from = if thorough { floor } else { floor.max(max.saturating_sub(RECONCILE_WINDOW)) };
+                let from = if thorough { floor } else { floor.max(max.saturating_sub(cfg.sync.reconcile_window)) };
                 let flags = step!(conn, |s| imap::fetch_flags(s, from, max).await)?;
                 changed |= store.reconcile(folder.id, from, max, &flags)?;
             }
@@ -286,7 +286,7 @@ impl Inner {
             // Older history, one chunk per pass.
             let cursor = store.backfill_uid(folder.id)?;
             if cursor > 1 {
-                let lo = cursor.saturating_sub(BACKFILL_CHUNK).max(1);
+                let lo = cursor.saturating_sub(cfg.sync.backfill_chunk).max(1);
                 let older = step!(conn, |s| imap::fetch_headers(s, &format!("{lo}:{}", cursor - 1)).await)?;
                 let older: Vec<_> = older.into_iter().filter(|m| m.uid >= lo && m.uid < cursor).collect();
                 changed |= store.insert_messages(acc.id, folder.id, &older)? > 0;
@@ -304,7 +304,7 @@ impl Inner {
 
         if folder.role == "inbox" {
             let mut got = false;
-            for (id, uid) in store.missing_bodies(folder.id, PREFETCH_BODIES)? {
+            for (id, uid) in store.missing_bodies(folder.id, cfg.sync.prefetch_bodies.into())? {
                 let mut conn = self.acquire(acc).await?;
                 step!(conn, |s| imap::select(s, &folder.path).await)?;
                 match step!(conn, |s| imap::fetch_body(s, uid).await) {
@@ -373,11 +373,12 @@ impl Inner {
             Some(id) => self.store.threading(id)?.map(|(mid, refs, _)| (mid, refs)),
             None => None,
         };
-        smtp::check_sender(&acc, &self.store.aliases(acc.id)?, &draft)?;
+        let cfg = self.config.get();
+        smtp::check_sender(&acc, &cfg.aliases(acc.id), &draft)?;
         let msg = smtp::build(&acc, &draft, threading)?;
         let raw = msg.formatted();
         let cred = self.credential(&acc).await?;
-        smtp::send(&acc, &cred, msg).await?;
+        smtp::send(&acc, &cred, msg, Duration::from_secs(cfg.network.smtp_timeout_secs)).await?;
 
         // From here the message is sent; follow-up failures must not look like a failed send.
         let saves_sent = providers::get(&acc.provider).map(|p| p.server_saves_sent).unwrap_or(false);
@@ -412,11 +413,7 @@ impl Inner {
             .await?
             .filter(|k| !k.trim().is_empty())
             .ok_or_else(|| anyhow!("Add your Anthropic API key in Settings to use this."))?;
-        let model = self
-            .store
-            .setting(claude::MODEL_SETTING)?
-            .filter(|m| !m.trim().is_empty())
-            .unwrap_or_else(|| claude::DEFAULT_MODEL.to_string());
+        let cfg = self.config.get();
 
         if self.store.body(message_id)?.is_none() {
             self.fetch_body(message_id).await?;
@@ -430,7 +427,7 @@ impl Inner {
         };
 
         let email = claude::Email { from: &from, to: &row.to, subject: &row.subject, sent: row.date, text: &text };
-        let mut out = claude::extract(key.trim(), model.trim(), &email).await?;
+        let mut out = claude::extract(key.trim(), &cfg.claude, &email).await?;
 
         let header_id = self.store.threading(message_id)?.map(|t| t.0).unwrap_or_default();
         out.items = out
@@ -452,7 +449,8 @@ impl Inner {
         if acc.imap_host.trim().is_empty() {
             bail!("enter an IMAP server");
         }
-        let mut s = imap::connect(acc, cred).await?;
+        let timeout = Duration::from_secs(self.config.get().network.imap_connect_timeout_secs);
+        let mut s = imap::connect(acc, cred, timeout).await?;
         let _ = s.logout().await;
         Ok(())
     }
@@ -475,7 +473,7 @@ pub async fn run(inner: Arc<Inner>) {
         }
         first = false;
 
-        let wait = if more { Duration::from_secs(1) } else { POLL_INTERVAL };
+        let wait = if more { Duration::from_secs(1) } else { Duration::from_secs(inner.config.get().sync.poll_interval_secs) };
         tokio::select! {
             _ = tokio::time::sleep(wait) => {}
             _ = inner.wake.notified() => {}

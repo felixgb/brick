@@ -57,9 +57,9 @@ pub fn tls_config() -> Arc<rustls::ClientConfig> {
     Arc::new(cfg)
 }
 
-pub async fn connect(acc: &Account, cred: &Credential) -> Result<Session> {
+pub async fn connect(acc: &Account, cred: &Credential, timeout: Duration) -> Result<Session> {
     let addr = (acc.imap_host.as_str(), acc.imap_port);
-    let tcp = tokio::time::timeout(Duration::from_secs(20), TcpStream::connect(addr))
+    let tcp = tokio::time::timeout(timeout, TcpStream::connect(addr))
         .await
         .map_err(|_| anyhow!("timed out connecting to {}", acc.imap_host))?
         .with_context(|| format!("could not connect to {}", acc.imap_host))?;

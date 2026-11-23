@@ -79,7 +79,7 @@ fn add_account_send_sync_read_flag_move() {
             smtp_port: 3025,
             smtp_security: Security::Plain,
         };
-        let mut s = imap::connect(&acc, &Credential::Password("secret".into())).await.unwrap();
+        let mut s = imap::connect(&acc, &Credential::Password("secret".into()), std::time::Duration::from_secs(20)).await.unwrap();
         for f in ["Trash", "Sent", "Archive"] {
             let _ = s.create(f).await;
         }

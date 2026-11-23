@@ -5,6 +5,7 @@
 //! through a callback. The C ABI in [`ffi`] is a thin wrapper over that.
 
 pub mod claude;
+pub mod config;
 pub mod engine;
 pub mod ffi;
 pub mod ics;

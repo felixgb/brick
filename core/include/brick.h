@@ -14,8 +14,11 @@
  *
  * Methods
  *   providers.list                                   -> [provider]
- *   settings.get        {key}                        -> string | null
- *   settings.set        {key, value}
+ *   settings.get        {key}                        -> string | null  (null: left at its default)
+ *   settings.set        {key, value}                 a blank value removes the key, restoring the default
+ *   config.status                                    -> {path, error | null}  error: config.toml was
+ *                                                       edited into an invalid state; the last good
+ *                                                       version stays in use until it is fixed
  *   accounts.list                                    -> [account]
  *   accounts.add        {provider, email, name, password, ...server overrides}
  *                                                    -> {pending}; then account_added | account_error
@@ -72,7 +75,7 @@
  *                                                       Sends the email to Claude. Nothing is saved;
  *                                                       save the proposals you keep with items.save.
  *   claude.status                                    -> {configured, model, default_model}
- *   claude.set_key      {key}                        (empty removes it; stored in the keychain)
+ *   claude.set_key      {key}                        (empty removes it; stored with the other secrets)
  *
  * Events (field "type")
  *   accounts_changed, account_added {account_id}, account_error {message},
@@ -85,10 +88,27 @@
  *   items_extract_error {token, message_id, message},
  *   error {account_id, message}
  *
- * Settings keys for OAuth: google_client_id, google_client_secret,
- * microsoft_client_id. Claude model: claude_model. Per account (<id> is the
- * account id): aliases_<id> (extra addresses to send as, separated by commas or
- * whitespace) and signature_<id> (used by front ends; the engine only stores it).
+ * Secrets (passwords, OAuth refresh tokens, the Claude key) are kept out of the
+ * database: in the Keychain on macOS, and on Linux in secrets.json in data_dir,
+ * readable only by its owner (0600) but not encrypted.
+ *
+ * Settings live in config.toml in data_dir (or the file BRICK_CONFIG names),
+ * written with every key commented out at its default on first open. The engine
+ * re-reads it when it changes; settings.set edits it in place, keeping comments,
+ * and refuses values that would make it invalid. Keys are dotted paths into the
+ * file (sync.poll_interval_secs, ui.threaded, ...); values travel as text and are
+ * parsed to the file's type. The template in core/src/config.rs lists them all.
+ * The older flat names still work:
+ *   claude_model                     -> claude.model
+ *   <provider>_client_id / _secret   -> oauth.<provider>.client_id / client_secret
+ *   aliases_<id>                     -> accounts.<id>.aliases (extra addresses to send
+ *                                       as; set as text split on commas, semicolons or
+ *                                       whitespace, read back one per line)
+ *   signature_<id>                   -> accounts.<id>.signature (used by front ends)
+ * <id> is the account id. Unknown keys are an error. Settings saved in the
+ * database by earlier versions are moved into the file on open.
+ * Environment variables win over the file: BRICK_SECRETS over secrets.store,
+ * BRICK_ANTHROPIC_BASE_URL over claude.base_url.
  */
 #ifndef BRICK_H
 #define BRICK_H

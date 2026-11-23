@@ -24,7 +24,7 @@ pub struct Draft {
     #[serde(default)]
     pub reply_to_id: Option<i64>,
     /// Send as this address instead of the account's own. It must be one of
-    /// the account's aliases; see `Store::aliases`.
+    /// the account's aliases; see `Config::aliases`.
     #[serde(default)]
     pub from: Option<String>,
 }
@@ -83,7 +83,7 @@ pub fn build(acc: &Account, d: &Draft, threading: Option<(String, String)>) -> R
     b.header(ContentType::TEXT_PLAIN).body(d.text.clone()).context("could not build the message")
 }
 
-pub async fn send(acc: &Account, cred: &Credential, msg: Message) -> Result<()> {
+pub async fn send(acc: &Account, cred: &Credential, msg: Message, timeout: std::time::Duration) -> Result<()> {
     let host = acc.smtp_host.as_str();
     let builder = match acc.smtp_security {
         Security::Tls => AsyncSmtpTransport::<Tokio1Executor>::relay(host)?,
@@ -97,7 +97,7 @@ pub async fn send(acc: &Account, cred: &Credential, msg: Message) -> Result<()> 
             .credentials(Credentials::new(acc.username.clone(), t.clone()))
             .authentication(vec![Mechanism::Xoauth2]),
     };
-    let transport = builder.port(acc.smtp_port).timeout(Some(std::time::Duration::from_secs(60))).build();
+    let transport = builder.port(acc.smtp_port).timeout(Some(timeout)).build();
     transport.send(msg).await.map_err(|e| anyhow!("{} would not accept the message: {e}", acc.smtp_host))?;
     Ok(())
 }

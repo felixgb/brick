@@ -39,11 +39,12 @@ final class AppModel {
         didSet { if searchText != oldValue { scheduleSearch() } }
     }
 
-    /// Group the message list into conversations.
-    var threaded = UserDefaults.standard.object(forKey: "threaded") as? Bool ?? true {
+    /// Group the message list into conversations. Kept in config.toml ([ui] threaded);
+    /// read from there in init.
+    var threaded = true {
         didSet {
             guard threaded != oldValue else { return }
-            UserDefaults.standard.set(threaded, forKey: "threaded")
+            setSetting("ui.threaded", threaded ? "true" : "false")
             selection = []
             loadMessages()
         }
@@ -93,6 +94,14 @@ final class AppModel {
                 MainActor.assumeIsolated { self?.handle(event) }
             }
             providers = (try? core.call("providers.list")) ?? []
+            // Earlier versions kept this in UserDefaults; carry it over once.
+            if let old = UserDefaults.standard.object(forKey: "threaded") as? Bool {
+                if (try? core.send("settings.get", ["key": "ui.threaded"])) as? String == nil {
+                    _ = try? core.send("settings.set", ["key": "ui.threaded", "value": old ? "true" : "false"])
+                }
+                UserDefaults.standard.removeObject(forKey: "threaded")
+            }
+            threaded = ((try? core.send("settings.get", ["key": "ui.threaded"])) as? String) != "false"
             reloadAccounts()
             reloadItems()
             refreshClaudeStatus()

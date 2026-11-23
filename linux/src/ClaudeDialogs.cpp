@@ -32,7 +32,7 @@ ClaudeSettingsDialog::ClaudeSettingsDialog(Core *core, QWidget *parent) : QDialo
     m_key = new QLineEdit;
     m_key->setObjectName("claudeKey");
     m_key->setEchoMode(QLineEdit::Password);
-    m_key->setPlaceholderText(configured ? tr("Saved in your keychain") : QStringLiteral("sk-ant-…"));
+    m_key->setPlaceholderText(configured ? tr("Saved") : QStringLiteral("sk-ant-…"));
     m_model = new QLineEdit(current == defaultModel ? QString() : current);
     m_model->setPlaceholderText(defaultModel);
 

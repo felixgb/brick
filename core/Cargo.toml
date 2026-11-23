@@ -24,13 +24,19 @@ lettre = { version = "0.11", default-features = false, features = ["builder", "s
 mail-parser = "0.9"
 ammonia = "4"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
-keyring = { version = "3", features = ["apple-native", "async-secret-service", "tokio", "crypto-rust"] }
 base64 = "0.22"
 sha2 = "0.10"
 rand = "0.8"
 url = "2"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 log = "0.4"
+toml_edit = { version = "0.22", features = ["serde"] }
+
+# The Keychain is used on macOS only. Linux deliberately does not use the
+# Secret Service (GNOME Keyring / KWallet), so the app does not depend on a
+# particular desktop.
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
 
 [dev-dependencies]
 tempfile = "3"

@@ -189,7 +189,24 @@ impl Store {
         f(&self.db())
     }
 
-    // ---- settings -------------------------------------------------------
+    // ---- legacy settings ------------------------------------------------
+    // Settings now live in config.toml (see config.rs). The table is only read
+    // so values saved by older versions can be moved there.
+
+    pub fn legacy_settings(&self) -> Result<Vec<(String, String)>> {
+        let db = self.db();
+        let mut st = db.prepare("SELECT key, value FROM settings ORDER BY key")?;
+        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub fn delete_legacy_settings(&self, keys: &[String]) -> Result<()> {
+        let db = self.db();
+        for k in keys {
+            db.execute("DELETE FROM settings WHERE key = ?1", [k])?;
+        }
+        Ok(())
+    }
 
     pub fn setting(&self, key: &str) -> Result<Option<String>> {
         Ok(self
@@ -515,13 +532,6 @@ impl Store {
         )?)
     }
 
-    /// Addresses the user may send as, besides the account's own, kept in the
-    /// setting `aliases_<account id>` (separated by commas, semicolons or spaces).
-    pub fn aliases(&self, account_id: i64) -> Result<Vec<String>> {
-        let raw = self.setting(&format!("aliases_{account_id}"))?.unwrap_or_default();
-        Ok(raw.split([',', ';', '\n', ' ']).map(str::trim).filter(|a| !a.is_empty()).map(String::from).collect())
-    }
-
     /// One row per conversation in a folder (or in every folder of a role),
     /// newest conversation first. Each row is the conversation's newest message.
     pub fn list_threads(&self, scope: &Scope, offset: i64, limit: i64) -> Result<Vec<ThreadRow>> {
@@ -771,7 +781,7 @@ mod tests {
     }
 
     #[test]
-    fn unified_inbox_spans_accounts_and_aliases_are_read_from_settings() {
+    fn unified_inbox_spans_accounts() {
         let s = Store::open_in_memory().unwrap();
         let a = s.add_account(&account()).unwrap();
         let b = s.add_account(&Account { email: "b@example.com".into(), ..account() }).unwrap();
@@ -789,9 +799,10 @@ mod tests {
         assert_eq!(rows.iter().map(|r| r.uid).collect::<Vec<_>>(), vec![3, 2, 1], "newest first across accounts");
         assert_eq!(s.list_messages_by_role("inbox", 1, 1).unwrap()[0].uid, 2, "paging works");
 
-        assert!(s.aliases(a).unwrap().is_empty());
-        s.set_setting(&format!("aliases_{a}"), "me@work.example, shop@example.com;\nx@y.example").unwrap();
-        assert_eq!(s.aliases(a).unwrap(), ["me@work.example", "shop@example.com", "x@y.example"]);
+        s.set_setting("claude_model", "m").unwrap();
+        assert_eq!(s.legacy_settings().unwrap(), [("claude_model".to_string(), "m".to_string())]);
+        s.delete_legacy_settings(&["claude_model".into()]).unwrap();
+        assert!(s.legacy_settings().unwrap().is_empty());
     }
 
     fn threaded(uid: u32, id: &str, reply_to: &str, refs: &str) -> NewMessage {

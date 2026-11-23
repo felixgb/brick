@@ -4,6 +4,7 @@
 //! parseable. Nothing is saved here: the caller shows the proposals to the
 //! user, who decides what to keep.
 
+pub use crate::config::ClaudeConfig;
 use crate::items::Item;
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Local, TimeZone};
@@ -13,13 +14,10 @@ use std::time::Duration;
 
 pub const DEFAULT_MODEL: &str = "claude-opus-5-5";
 pub const KEY_SECRET: &str = "anthropic-api-key";
-pub const MODEL_SETTING: &str = "claude_model";
 
 const API_VERSION: &str = "2026-10-21";
 /// Lets the API retry on another model if a safety classifier declines the request.
 const FALLBACK_BETA: &str = "server-side-fallback-2026-07-01";
-/// Emails longer than this are cut, and the user is told.
-const MAX_BODY_CHARS: usize = 100_000;
 
 const SYSTEM: &str = "\
 You turn emails into entries for the reader's combined to-do list and calendar. \
@@ -109,10 +107,11 @@ where
     t.format("%A %-d %B %Y, %H:%M (UTC%:z)").to_string()
 }
 
-fn request_body(model: &str, email: &Email, now: DateTime<Local>) -> (Value, bool) {
+fn request_body(cfg: &ClaudeConfig, email: &Email, now: DateTime<Local>) -> (Value, bool) {
+    let max_chars = cfg.max_body_chars;
     let total = email.text.chars().count();
-    let truncated = total > MAX_BODY_CHARS;
-    let text: String = email.text.chars().take(MAX_BODY_CHARS).collect();
+    let truncated = total > max_chars;
+    let text: String = email.text.chars().take(max_chars).collect();
     let sent = Local.timestamp_opt(email.sent, 0).single().map(stamp).unwrap_or_else(|| "unknown".into());
 
     let user = format!(
@@ -127,8 +126,8 @@ fn request_body(model: &str, email: &Email, now: DateTime<Local>) -> (Value, boo
     );
 
     let body = json!({
-        "model": model,
-        "max_tokens": 16000,
+        "model": cfg.model(),
+        "max_tokens": cfg.max_tokens,
         "system": SYSTEM,
         // Extraction is a short, well-specified job; low effort keeps the button quick.
         "output_config": {
@@ -141,23 +140,26 @@ fn request_body(model: &str, email: &Email, now: DateTime<Local>) -> (Value, boo
     (body, truncated)
 }
 
-fn base_url() -> String {
-    std::env::var("BRICK_ANTHROPIC_BASE_URL").unwrap_or_else(|_| "https://api.anthropic.com".into())
+/// `BRICK_ANTHROPIC_BASE_URL` (used to point tests at a stand-in) wins over
+/// `claude.base_url` in config.toml.
+fn base_url(cfg: &ClaudeConfig) -> String {
+    std::env::var("BRICK_ANTHROPIC_BASE_URL").unwrap_or_else(|_| cfg.base_url.clone())
 }
 
-pub async fn extract(api_key: &str, model: &str, email: &Email<'_>) -> Result<Extraction> {
-    extract_at(&base_url(), api_key, model, email).await
+pub async fn extract(api_key: &str, cfg: &ClaudeConfig, email: &Email<'_>) -> Result<Extraction> {
+    extract_at(&base_url(cfg), api_key, cfg, email).await
 }
 
-pub async fn extract_at(base: &str, api_key: &str, model: &str, email: &Email<'_>) -> Result<Extraction> {
-    let (body, truncated) = request_body(model, email, Local::now());
+pub async fn extract_at(base: &str, api_key: &str, cfg: &ClaudeConfig, email: &Email<'_>) -> Result<Extraction> {
+    let model = cfg.model();
+    let (body, truncated) = request_body(cfg, email, Local::now());
     let resp = reqwest::Client::new()
         .post(format!("{}/v1/messages", base.trim_end_matches('/')))
         .header("x-api-key", api_key)
         .header("anthropic-version", API_VERSION)
         .header("anthropic-beta", FALLBACK_BETA)
         .json(&body)
-        .timeout(Duration::from_secs(180))
+        .timeout(Duration::from_secs(cfg.timeout_secs))
         .send()
         .await
         .context("could not reach Claude")?;
@@ -246,7 +248,7 @@ mod tests {
 
     #[test]
     fn request_has_the_current_api_shape() {
-        let (body, truncated) = request_body(DEFAULT_MODEL, &email(), Local::now());
+        let (body, truncated) = request_body(&ClaudeConfig::default(), &email(), Local::now());
         assert!(!truncated);
         assert_eq!(body["model"], "claude-opus-5-5");
         assert_eq!(body["output_config"]["format"]["type"], "json_schema");
@@ -263,10 +265,10 @@ mod tests {
 
     #[test]
     fn long_emails_are_cut_and_flagged() {
-        let long = "x".repeat(MAX_BODY_CHARS + 50);
+        let long = "x".repeat(ClaudeConfig::default().max_body_chars + 50);
         let mut e = email();
         e.text = &long;
-        let (body, truncated) = request_body(DEFAULT_MODEL, &e, Local::now());
+        let (body, truncated) = request_body(&ClaudeConfig::default(), &e, Local::now());
         assert!(truncated);
         assert!(body["messages"][0]["content"].as_str().unwrap().contains("only its first part"));
     }
@@ -292,7 +294,7 @@ mod tests {
             ]
         });
         let (base, server) = stand_in("200 OK", response.to_string()).await;
-        let out = extract_at(&base, "sk-test", DEFAULT_MODEL, &email()).await.unwrap();
+        let out = extract_at(&base, "sk-test", &ClaudeConfig::default(), &email()).await.unwrap();
 
         assert_eq!(out.items.len(), 2, "the untitled entry is dropped");
         assert_eq!(out.items[0].date.as_deref(), Some("2026-11-12"));
@@ -310,11 +312,11 @@ mod tests {
     #[tokio::test]
     async fn errors_are_explained() {
         let (base, _s) = stand_in("401 Unauthorized", json!({"error": {"message": "invalid x-api-key"}}).to_string()).await;
-        let err = extract_at(&base, "bad", DEFAULT_MODEL, &email()).await.unwrap_err().to_string();
+        let err = extract_at(&base, "bad", &ClaudeConfig::default(), &email()).await.unwrap_err().to_string();
         assert!(err.contains("API key"), "{err}");
 
         let (base, _s) = stand_in("200 OK", json!({"stop_reason": "refusal", "content": []}).to_string()).await;
-        let err = extract_at(&base, "k", DEFAULT_MODEL, &email()).await.unwrap_err().to_string();
+        let err = extract_at(&base, "k", &ClaudeConfig::default(), &email()).await.unwrap_err().to_string();
         assert!(err.contains("declined"), "{err}");
     }
 }

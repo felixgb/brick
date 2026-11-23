@@ -10,7 +10,7 @@ longer working list. Items are roughly ordered by priority within each section.
 - [ ] Confirm the calendar day click is snappy after the tap-gesture fix (`CalendarView.swift`); profile with Instruments if not
 - [ ] Send one real request to the Anthropic API and check the extraction flow end to end
 - [ ] Sign in to real Gmail and Outlook accounts and fix whatever the stand-in OAuth server hid
-- [ ] Exercise Keychain / Secret Service storage outside the in-memory test store
+- [ ] Exercise Keychain storage on macOS outside the in-memory test store
 - [ ] Run the end-to-end IMAP/SMTP test in CI
 
 ## Speed (the app's main promise)
@@ -51,6 +51,13 @@ longer working list. Items are roughly ordered by priority within each section.
 - [x] Import and export `.ics` (engine + Linux; macOS not done)
 - [x] Open invitations in email as items (engine + Linux; macOS not done)
 - [x] To-do and Calendar tabs in the Linux app
+
+## Configuration (`config.toml`)
+
+- [ ] Build the macOS side on a Mac: `ui.threaded` moved from UserDefaults to `config.toml` (written, not compiled)
+- [ ] Front ends read `ui.threaded` once at startup; have the engine emit an event when `config.toml` changes so they can follow hand edits
+- [ ] Surface `config.status` errors (file edited into an invalid state) in the UI instead of only the log
+- [ ] Window geometry and splitter positions are still in QSettings on Linux; decide whether layout state belongs in the file
 
 ## Claude extraction
 

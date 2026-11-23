@@ -69,7 +69,8 @@ fn items_round_trip_through_the_engine() {
     assert_eq!(status["model"], "claude-opus-5-5");
     call(&e, "claude.set_key", json!({ "key": "  sk-ant-test  " }));
     assert_eq!(call(&e, "claude.status", json!({}))["configured"], true);
-    assert_eq!(call(&e, "settings.get", json!({ "key": "anthropic-api-key" })), Value::Null);
+    let config = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+    assert!(!config.contains("sk-ant-test"), "the key must not reach config.toml");
     call(&e, "claude.set_key", json!({ "key": "" }));
     assert_eq!(call(&e, "claude.status", json!({}))["configured"], false);
 

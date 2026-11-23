@@ -23,7 +23,9 @@ background and reports back as an event.
 | Linux Qt app | Builds and runs with Qt 6.8.3. Mail, To-do, Calendar (month, week, day), repeats, `.ics`, invitations, unified inbox, signatures, aliases and the Claude button, all driven and checked through the debug hook (headless, against stand-in servers). Not yet tried on a real desktop or a real mail account. |
 | macOS app | Mail builds and runs. The To-do and Calendar tabs, the Claude button and everything added since (week and day views, repeats, `.ics`, invitations, unified inbox, aliases, signatures, conversations) are written but **not yet compiled or run**. The calendar's slow day click was fixed in source, not yet confirmed on a Mac. |
 | Claude extraction | Tested against a stand-in server only; no request has been sent to the real API. |
-| Keychain storage | Compiles; not exercised (tests use the in-memory store). |
+| Keychain storage (macOS) | Compiles; not exercised (tests use the in-memory store). |
+| Secrets file (Linux) | Unit-tested, and checked once through the running app. |
+| `config.toml` | Engine unit- and API-tested; on Linux the conversations toggle checked through the running app (headless). The macOS side of `ui.threaded` is written but not yet compiled. |
 | Gmail and Outlook sign-in | The OAuth flow is tested against a stand-in server, not against Google or Microsoft. |
 
 Expect compile errors in anything marked as not yet compiled.
@@ -39,7 +41,7 @@ Expect compile errors in anything marked as not yet compiled.
 - Mark read/unread, star, archive, move to Trash, delete from Trash; all applied locally first
 - Send and reply (plain text) with correct threading headers; a copy is filed in Sent where the provider doesn't do that itself
 - HTML mail is sanitised: scripts, frames and event handlers removed, remote images blocked until you allow them per message
-- Credentials live in the macOS Keychain or the Linux Secret Service, never in the database
+- Credentials never go in the database: on macOS they live in the Keychain, on Linux in a file only you can read (see below)
 
 ## To-do and calendar
 
@@ -55,7 +57,7 @@ it is a timed entry. Any item can be ticked off.
   items made from it.
 
 To use the Claude button, add an Anthropic API key under Settings → Claude. It
-is stored in the Keychain. Each click sends that one email's sender,
+is stored with your mail passwords. Each click sends that one email's sender,
 recipients, subject, date and text to Anthropic's API; attachments are not
 sent, and nothing is sent at any other time. The model defaults to
 `claude-opus-5-5` and can be changed in the same place (`claude-haiku-5-5` is
@@ -121,10 +123,31 @@ header of [linux/src/DebugServer.h](linux/src/DebugServer.h) for the commands.
 `fake-claude.py` stands in for the Anthropic API (set
 `BRICK_ANTHROPIC_BASE_URL`) so Add to To-do can be tried without a key.
 
-Passwords and tokens are stored through the Secret Service, so a keyring daemon
-(gnome-keyring, KWallet, KeePassXC) must be running. To try the app without
-one, `BRICK_SECRETS=memory ./linux/build/brick` keeps credentials in memory
-only; you will be asked to sign in again on every start.
+Passwords, OAuth refresh tokens and the Anthropic key are kept in
+`~/.local/share/brick/brick/secrets.json`, a file only your user can read or
+write (mode 0600; Brick narrows it back if that changes). It is not encrypted:
+anything running as you can read it, and backups copy it as it is, the same as
+`~/.netrc` or an msmtp config. Brick does not use the Secret Service (GNOME
+Keyring, KWallet), so it needs no particular desktop.
+`BRICK_SECRETS=memory ./linux/build/brick` (or `store = "memory"` under
+`[secrets]` in `config.toml`) keeps credentials in memory only;
+you will be asked to sign in again on every start.
+
+### Configuration
+
+Every setting is in one TOML file, `config.toml`, in the data directory
+(`~/.local/share/brick/brick/config.toml` on Linux,
+`~/Library/Application Support/Brick/config.toml` on macOS), or wherever
+`BRICK_CONFIG` points. The first run writes it with each setting commented out
+at its default: the sync windows and poll interval, network timeouts, the
+Claude model and limits, where secrets are kept, OAuth client IDs, and each
+account's aliases and signature. Brick notices when the file changes, so most
+edits apply without a restart (the secret store is chosen at startup, and the
+front ends read `ui.threaded` when they start). The settings dialogs write to
+the same file and keep your comments. A mistake in the file stops Brick from
+starting with a message naming the line; a mistake made while it is running is
+ignored, and the last good settings stay in use until the file is fixed.
+`BRICK_SECRETS` and `BRICK_ANTHROPIC_BASE_URL` override the file.
 
 ### macOS
 

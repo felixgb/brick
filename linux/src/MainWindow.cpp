@@ -221,10 +221,20 @@ void MainWindow::buildUi() {
     m_threadAct = viewMenu->addAction(tr("Group into &conversations"));
     m_threadAct->setObjectName("threadAction");
     m_threadAct->setCheckable(true);
-    m_threadAct->setChecked(QSettings().value("mail/threaded", true).toBool());
+    {
+        // Kept in config.toml ([ui] threaded). Earlier versions used QSettings; carry that over once.
+        QSettings old;
+        if (old.contains("mail/threaded")) {
+            if (m_core->call("settings.get", {{"key", "ui.threaded"}}).isNull())
+                m_core->call("settings.set", {{"key", "ui.threaded"},
+                                              {"value", old.value("mail/threaded").toBool() ? "true" : "false"}});
+            old.remove("mail/threaded");
+        }
+    }
+    m_threadAct->setChecked(m_core->call("settings.get", {{"key", "ui.threaded"}}).toString() != QLatin1String("false"));
     m_model->setThreaded(m_threadAct->isChecked());
     connect(m_threadAct, &QAction::toggled, this, [this](bool on) {
-        QSettings().setValue("mail/threaded", on);
+        m_core->call("settings.set", {{"key", "ui.threaded"}, {"value", on ? "true" : "false"}});
         m_model->setThreaded(on);
         clearReader();
         updateActions();
