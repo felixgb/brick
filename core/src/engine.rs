@@ -39,39 +39,32 @@ impl Engine {
     /// Settings come from `config.toml` there (or `BRICK_CONFIG`); see config.rs.
     pub fn open(data_dir: &Path, emit: Emit) -> Result<Self> {
         std::fs::create_dir_all(data_dir).with_context(|| format!("could not create {}", data_dir.display()))?;
-        let config = ConfigFile::open(&config::default_path(data_dir))?;
+        let config = Arc::new(ConfigFile::open(&config::default_path(data_dir))?);
         // BRICK_SECRETS overrides secrets.store, so tools can run against a throwaway store.
         let kind = match std::env::var("BRICK_SECRETS") {
             Ok(v) if !v.trim().is_empty() => v.parse::<SecretStoreKind>().context("BRICK_SECRETS")?,
             _ => config.get().secrets.store,
         };
-        let file_store = || -> Result<Arc<dyn SecretStore>> {
-            #[cfg(unix)]
-            return Ok(Arc::new(secrets::FileStore::open(&data_dir.join("secrets.json"))?));
-            #[cfg(not(unix))]
-            bail!("secrets.store = \"file\" is not supported on this system");
-        };
         let secrets: Arc<dyn SecretStore> = match kind {
             SecretStoreKind::Memory => Arc::new(MemoryStore::default()),
-            SecretStoreKind::File => file_store()?,
-            #[cfg(target_os = "macos")]
-            SecretStoreKind::Auto | SecretStoreKind::Keychain => Arc::new(secrets::KeyringStore::new("brick-mail")),
-            // Linux: a private file next to the database, not the Secret Service.
-            #[cfg(not(target_os = "macos"))]
-            SecretStoreKind::Auto => file_store()?,
-            #[cfg(not(target_os = "macos"))]
-            SecretStoreKind::Keychain => bail!("secrets.store = \"keychain\" is only available on macOS"),
+            SecretStoreKind::Config => {
+                // Earlier versions kept them in secrets.json on Linux.
+                if let Err(e) = config.adopt_secrets_file(&data_dir.join("secrets.json")) {
+                    log::warn!("{e:#}");
+                }
+                config.clone()
+            }
         };
         Self::start(data_dir, config, secrets, emit)
     }
 
     pub fn open_with(data_dir: &Path, secrets: Arc<dyn SecretStore>, emit: Emit) -> Result<Self> {
         std::fs::create_dir_all(data_dir).with_context(|| format!("could not create {}", data_dir.display()))?;
-        let config = ConfigFile::open(&config::default_path(data_dir))?;
+        let config = Arc::new(ConfigFile::open(&config::default_path(data_dir))?);
         Self::start(data_dir, config, secrets, emit)
     }
 
-    fn start(data_dir: &Path, config: ConfigFile, secrets: Arc<dyn SecretStore>, emit: Emit) -> Result<Self> {
+    fn start(data_dir: &Path, config: Arc<ConfigFile>, secrets: Arc<dyn SecretStore>, emit: Emit) -> Result<Self> {
         let store = Store::open(&data_dir.join("brick.sqlite"))?;
         // Older versions kept settings in the database; move them to config.toml.
         let legacy = store.legacy_settings()?;
@@ -295,16 +288,16 @@ impl Engine {
             }
 
             "claude.status" => {
-                let configured = self.inner.secrets.get(claude::KEY_SECRET)?.is_some_and(|k| !k.trim().is_empty());
+                let configured = self.inner.secrets.get(secrets::CLAUDE_KEY)?.is_some_and(|k| !k.trim().is_empty());
                 let model = self.inner.config.get().claude.model().to_string();
                 json!({ "configured": configured, "model": model, "default_model": claude::DEFAULT_MODEL })
             }
             "claude.set_key" => {
                 let key = param::<String>(p, "key")?.trim().to_string();
                 if key.is_empty() {
-                    self.inner.secrets.delete(claude::KEY_SECRET)?;
+                    self.inner.secrets.delete(secrets::CLAUDE_KEY)?;
                 } else {
-                    self.inner.secrets.set(claude::KEY_SECRET, &key)?;
+                    self.inner.secrets.set(secrets::CLAUDE_KEY, &key)?;
                 }
                 Value::Null
             }

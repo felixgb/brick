@@ -75,7 +75,7 @@
  *                                                       Sends the email to Claude. Nothing is saved;
  *                                                       save the proposals you keep with items.save.
  *   claude.status                                    -> {configured, model, default_model}
- *   claude.set_key      {key}                        (empty removes it; stored with the other secrets)
+ *   claude.set_key      {key}                        (empty removes it; stored as claude.api_key)
  *
  * Events (field "type")
  *   accounts_changed, account_added {account_id}, account_error {message},
@@ -89,8 +89,10 @@
  *   error {account_id, message}
  *
  * Secrets (passwords, OAuth refresh tokens, the Claude key) are kept out of the
- * database: in the Keychain on macOS, and on Linux in secrets.json in data_dir,
- * readable only by its owner (0600) but not encrypted.
+ * database, in config.toml with the settings: accounts.<id>.password,
+ * accounts.<id>.refresh_token and claude.api_key. The file is readable only by
+ * its owner (0600) but not encrypted. There is no Keychain or Secret Service
+ * backend. A secrets.json left by an earlier version is moved in and deleted.
  *
  * Settings live in config.toml in data_dir (or the file BRICK_CONFIG names),
  * written with every key commented out at its default on first open. The engine

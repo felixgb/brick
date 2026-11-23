@@ -1,9 +1,10 @@
 //! Brick's configuration file, `config.toml`.
 //!
-//! Every setting lives here: the engine's tunables (sync windows, timeouts,
-//! the Claude model), OAuth client IDs, per-account aliases and signatures, and
-//! front-end preferences. Secrets do not: passwords, refresh tokens and the
-//! Anthropic key stay in the secret store (see `secrets.rs`).
+//! Everything lives here: the engine's tunables (sync windows, timeouts, the
+//! Claude model), OAuth client IDs, per-account aliases and signatures,
+//! front-end preferences, and the secrets: account passwords, OAuth refresh
+//! tokens and the Anthropic key. The file is therefore kept to its owner (mode
+//! 0600, narrowed on open if it was looser). It is not encrypted.
 //!
 //! The file is `config.toml` in the data directory, or wherever `BRICK_CONFIG`
 //! points. A commented template listing every key with its default is written
@@ -21,6 +22,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
+use crate::secrets::SecretStore;
 use toml_edit::{DocumentMut, Item, Table, Value};
 
 pub const FILE_NAME: &str = "config.toml";
@@ -86,6 +88,7 @@ pub struct ClaudeConfig {
     pub max_tokens: u32,
     pub max_body_chars: usize,
     pub timeout_secs: u64,
+    pub api_key: String,
 }
 
 impl Default for ClaudeConfig {
@@ -96,6 +99,7 @@ impl Default for ClaudeConfig {
             max_tokens: 16000,
             max_body_chars: 100_000,
             timeout_secs: 180,
+            api_key: String::new(),
         }
     }
 }
@@ -113,23 +117,21 @@ impl ClaudeConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SecretStoreKind {
-    /// The Keychain on macOS, `secrets.json` elsewhere.
+    /// In this file.
     #[default]
-    Auto,
-    File,
+    #[serde(alias = "auto")]
+    Config,
+    /// Forgotten on exit.
     Memory,
-    Keychain,
 }
 
 impl std::str::FromStr for SecretStoreKind {
     type Err = anyhow::Error;
     fn from_str(s: &str) -> Result<Self> {
         Ok(match s.trim() {
-            "auto" | "" => Self::Auto,
-            "file" => Self::File,
+            "config" | "auto" | "" => Self::Config,
             "memory" => Self::Memory,
-            "keychain" => Self::Keychain,
-            other => bail!("unknown secret store \"{other}\" (use auto, file, memory or keychain)"),
+            other => bail!("unknown secret store \"{other}\" (use config or memory)"),
         })
     }
 }
@@ -167,6 +169,10 @@ pub struct AccountConfig {
     pub aliases: Vec<String>,
     /// Appended to new messages by the front ends.
     pub signature: String,
+    /// IMAP/SMTP password (password accounts).
+    pub password: String,
+    /// OAuth refresh token (Gmail, Outlook).
+    pub refresh_token: String,
 }
 
 impl Config {
@@ -225,7 +231,8 @@ pub const TEMPLATE: &str = r##"# Brick configuration.
 # apply without a restart (except secrets.store, which is read at startup).
 # The app's settings screens write here too, and keep your comments.
 #
-# Passwords, OAuth tokens and the Anthropic API key are not kept here.
+# Account passwords, OAuth tokens and the Anthropic API key are kept here too,
+# in plain text. Brick keeps this file readable only by you; don't share it.
 
 [sync]
 # Seconds between checks for new mail.
@@ -253,12 +260,13 @@ pub const TEMPLATE: &str = r##"# Brick configuration.
 # Longer emails are cut to this many characters before they are sent.
 # max_body_chars = 100000
 # timeout_secs = 180
+# Your Anthropic API key, for Add to To-do. Settings > Claude writes it here.
+# api_key = ""
 
 [secrets]
-# Where passwords, OAuth tokens and the API key are kept: "auto" (the Keychain
-# on macOS, secrets.json in the data directory elsewhere), "file"
-# (secrets.json), "keychain" (macOS only) or "memory" (forgotten on exit).
-# store = "auto"
+# Where passwords, OAuth tokens and the API key are kept: "config" (this file)
+# or "memory" (forgotten on exit, so you sign in again on every start).
+# store = "config"
 
 [ui]
 # Group the message list into conversations.
@@ -270,12 +278,14 @@ pub const TEMPLATE: &str = r##"# Brick configuration.
 #   client_secret = "..."
 [oauth]
 
-# Per-account options. The table name is the account's id:
+# Per-account options. The table name is the account's id. Brick writes the
+# password or refresh_token when you add the account.
 #   [accounts.1]
 #   aliases = ["me@work.example", "shop@example.com"]
 #   signature = """
 #   Best wishes,
 #   A. Person"""
+#   password = "..."
 [accounts]
 "##;
 
@@ -324,6 +334,7 @@ impl ConfigFile {
             }
             write_atomic(path, TEMPLATE)?;
         }
+        narrow_permissions(path)?;
         let (doc, cfg) = load(path).with_context(|| format!("{} is not valid", path.display()))?;
         let state = State { doc, config: Arc::new(cfg), stamp: stamp(path), broken: None };
         Ok(Self { path: path.to_path_buf(), state: Mutex::new(state) })
@@ -463,13 +474,29 @@ impl ConfigFile {
     }
 }
 
+/// The file holds passwords: take away any access other users have.
+fn narrow_permissions(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(path).with_context(|| format!("could not read {}", path.display()))?.permissions().mode();
+        if mode & 0o077 != 0 {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+                .with_context(|| format!("could not restrict permissions on {}", path.display()))?;
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
 fn write_atomic(path: &Path, text: &str) -> Result<()> {
     use std::io::Write;
     let tmp = path.with_extension("toml.tmp");
     let write = || -> std::io::Result<()> {
         let mut opts = std::fs::OpenOptions::new();
         opts.write(true).create(true).truncate(true);
-        // OAuth client secrets live here; keep the file to its owner.
+        // Passwords live here; keep the file to its owner.
         #[cfg(unix)]
         std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
         let mut f = opts.open(&tmp)?;
@@ -478,6 +505,57 @@ fn write_atomic(path: &Path, text: &str) -> Result<()> {
         std::fs::rename(&tmp, path)
     };
     write().with_context(|| format!("could not save {}", path.display()))
+}
+
+// ---- secrets ----------------------------------------------------------------
+
+/// Secrets are ordinary keys in the file (see `secrets.rs` for their names).
+impl SecretStore for ConfigFile {
+    fn get(&self, key: &str) -> Result<Option<String>> {
+        Ok(self.setting(key)?.filter(|v| !v.is_empty()))
+    }
+
+    fn set(&self, key: &str, value: &str) -> Result<()> {
+        // A refresh that hands back the same token shouldn't rewrite the file.
+        if self.setting(key)?.as_deref() == Some(value) {
+            return Ok(());
+        }
+        self.set_setting(key, value)
+    }
+
+    fn delete(&self, key: &str) -> Result<()> {
+        if self.setting(key)?.is_none() {
+            return Ok(());
+        }
+        self.set_setting(key, "")
+    }
+}
+
+impl ConfigFile {
+    /// Moves the secrets an earlier version kept in `secrets.json` into this
+    /// file, then deletes it. A value already here wins. Does nothing if there
+    /// is no such file; on any error the old file is left alone.
+    pub fn adopt_secrets_file(&self, old: &Path) -> Result<()> {
+        let text = match std::fs::read_to_string(old) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e).with_context(|| format!("could not read {}", old.display())),
+        };
+        let map: BTreeMap<String, String> =
+            serde_json::from_str(&text).with_context(|| format!("{} is not a valid secrets file", old.display()))?;
+        for (key, value) in &map {
+            let Some(new) = crate::secrets::legacy_key(key) else {
+                log::warn!("{key} in {} has no place in {FILE_NAME}; dropped", old.display());
+                continue;
+            };
+            if SecretStore::get(self, &new)?.is_none() {
+                SecretStore::set(self, &new, value)?;
+            }
+        }
+        std::fs::remove_file(old).with_context(|| format!("could not remove {}", old.display()))?;
+        log::info!("moved the secrets in {} into {}", old.display(), self.path.display());
+        Ok(())
+    }
 }
 
 // ---- keys -----------------------------------------------------------------
@@ -553,7 +631,10 @@ fn typed_value(path: &[String], raw: &str) -> Result<Value> {
             "false" | "no" | "off" | "0" => false,
             other => bail!("{key} must be true or false, not \"{other}\""),
         }),
-        _ if path.last().map(String::as_str) == Some("signature") => Value::from(raw),
+        // Signatures keep their layout; secrets are stored exactly as given.
+        _ if matches!(path.last().map(String::as_str), Some("signature" | "password" | "refresh_token" | "api_key")) => {
+            Value::from(raw)
+        }
         _ => Value::from(raw.trim()),
     })
 }
@@ -721,6 +802,7 @@ mod tests {
         assert!(c.set_setting("sync.bogus", "1").is_err());
         assert!(c.set_setting("ui.threaded", "maybe").is_err());
         assert!(c.set_setting("secrets.store", "vault").is_err());
+        assert!(c.set_setting("secrets.store", "keychain").is_err());
         assert_eq!(text(&c), before);
     }
 
@@ -761,6 +843,58 @@ mod tests {
         let cfg = c.get();
         assert_eq!(cfg.claude.model, "from-file");
         assert_eq!(cfg.oauth["google"].client_id, "abc");
+    }
+
+    #[test]
+    fn secrets_are_kept_in_the_file_exactly_as_given() {
+        let (_d, c) = file();
+        let s: &dyn SecretStore = &c;
+        assert_eq!(s.get(&crate::secrets::password_key(2)).unwrap(), None);
+        s.set(&crate::secrets::password_key(2), " pass word ").unwrap();
+        s.set(&crate::secrets::refresh_token_key(3), "tok").unwrap();
+        s.set(crate::secrets::CLAUDE_KEY, "sk-ant-x").unwrap();
+        assert_eq!(s.get(&crate::secrets::password_key(2)).unwrap().as_deref(), Some(" pass word "));
+        assert_eq!(c.get().account(3).unwrap().refresh_token, "tok");
+        assert_eq!(c.get().claude.api_key, "sk-ant-x");
+        assert!(text(&c).contains("# Your Anthropic API key, for Add to To-do. Settings > Claude writes it here.\napi_key = \"sk-ant-x\"\n"));
+
+        s.delete(&crate::secrets::password_key(2)).unwrap();
+        s.delete(&crate::secrets::password_key(2)).unwrap();
+        assert!(c.get().account(2).is_none(), "an emptied account table goes away");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_file_is_kept_to_its_owner() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join(FILE_NAME);
+        std::fs::write(&p, TEMPLATE).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let c = ConfigFile::open(&p).unwrap();
+        assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
+        c.set_setting("claude.api_key", "k").unwrap();
+        assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+
+    #[test]
+    fn an_old_secrets_file_is_moved_in_and_deleted() {
+        let (d, c) = file();
+        c.set_setting("accounts.1.password", "already here").unwrap();
+        let old = d.path().join("secrets.json");
+        std::fs::write(
+            &old,
+            r#"{"account-1-password":"old","account-2-password":"p2","account-3-refresh-token":"t3","anthropic-api-key":"k","odd":"x"}"#,
+        )
+        .unwrap();
+        c.adopt_secrets_file(&old).unwrap();
+        assert!(!old.exists());
+        let cfg = c.get();
+        assert_eq!(cfg.account(1).unwrap().password, "already here");
+        assert_eq!(cfg.account(2).unwrap().password, "p2");
+        assert_eq!(cfg.account(3).unwrap().refresh_token, "t3");
+        assert_eq!(cfg.claude.api_key, "k");
+        c.adopt_secrets_file(&old).unwrap();
     }
 
     #[test]

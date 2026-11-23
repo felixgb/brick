@@ -32,11 +32,5 @@ chrono = { version = "0.4", default-features = false, features = ["std", "clock"
 log = "0.4"
 toml_edit = { version = "0.22", features = ["serde"] }
 
-# The Keychain is used on macOS only. Linux deliberately does not use the
-# Secret Service (GNOME Keyring / KWallet), so the app does not depend on a
-# particular desktop.
-[target.'cfg(target_os = "macos")'.dependencies]
-keyring = { version = "3", features = ["apple-native"] }
-
 [dev-dependencies]
 tempfile = "3"

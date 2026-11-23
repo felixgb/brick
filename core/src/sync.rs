@@ -54,7 +54,7 @@ macro_rules! step {
 pub struct Inner {
     pub store: Store,
     pub secrets: Arc<dyn SecretStore>,
-    pub config: ConfigFile,
+    pub config: Arc<ConfigFile>,
     emit: Emit,
     conns: Mutex<HashMap<i64, Arc<AsyncMutex<Conn>>>>,
     tokens: Mutex<HashMap<i64, Tokens>>,
@@ -63,7 +63,7 @@ pub struct Inner {
 }
 
 impl Inner {
-    pub fn new(store: Store, secrets: Arc<dyn SecretStore>, config: ConfigFile, emit: Emit) -> Self {
+    pub fn new(store: Store, secrets: Arc<dyn SecretStore>, config: Arc<ConfigFile>, emit: Emit) -> Self {
         Self {
             store,
             secrets,
@@ -87,7 +87,7 @@ impl Inner {
     // ---- credentials ----------------------------------------------------
 
     async fn secret(&self, key: String) -> Result<Option<String>> {
-        // The keychain backends block, and some refuse to run on a runtime thread.
+        // Reading and writing config.toml is blocking file I/O.
         let secrets = self.secrets.clone();
         tokio::task::spawn_blocking(move || secrets.get(&key)).await?
     }
@@ -409,7 +409,7 @@ impl Inner {
     pub async fn extract_items(&self, message_id: i64) -> Result<claude::Extraction> {
         let row = self.store.message(message_id)?.ok_or_else(|| anyhow!("message no longer exists"))?;
         let key = self
-            .secret(claude::KEY_SECRET.to_string())
+            .secret(secrets::CLAUDE_KEY.to_string())
             .await?
             .filter(|k| !k.trim().is_empty())
             .ok_or_else(|| anyhow!("Add your Anthropic API key in Settings to use this."))?;

@@ -113,7 +113,7 @@ struct ClaudeSettingsView: View {
             Form {
                 SecureField(
                     "Anthropic API key", text: $key,
-                    prompt: Text(configured ? "Saved in your Keychain" : "sk-ant-…"))
+                    prompt: Text(configured ? "Saved in config.toml" : "sk-ant-…"))
                 TextField("Model", text: $modelName, prompt: Text(model.claude?.defaultModel ?? ""))
             }
             .formStyle(.columns)

@@ -10,7 +10,7 @@ longer working list. Items are roughly ordered by priority within each section.
 - [ ] Confirm the calendar day click is snappy after the tap-gesture fix (`CalendarView.swift`); profile with Instruments if not
 - [ ] Send one real request to the Anthropic API and check the extraction flow end to end
 - [ ] Sign in to real Gmail and Outlook accounts and fix whatever the stand-in OAuth server hid
-- [ ] Exercise Keychain storage on macOS outside the in-memory test store
+- [ ] Check secrets in `config.toml` through both running apps: add an account, rotate an OAuth token, set the Claude key
 - [ ] Run the end-to-end IMAP/SMTP test in CI
 
 ## Speed (the app's main promise)

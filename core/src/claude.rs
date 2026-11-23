@@ -13,7 +13,6 @@ use serde_json::{json, Value};
 use std::time::Duration;
 
 pub const DEFAULT_MODEL: &str = "claude-opus-5-5";
-pub const KEY_SECRET: &str = "anthropic-api-key";
 
 const API_VERSION: &str = "2026-10-21";
 /// Lets the API retry on another model if a safety classifier declines the request.

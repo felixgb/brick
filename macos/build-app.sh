@@ -13,6 +13,6 @@ mkdir -p "$APP/Contents/MacOS"
 cp "$(swift build -c release --show-bin-path)/Brick" "$APP/Contents/MacOS/Brick"
 cp Info.plist "$APP/Contents/Info.plist"
 
-# Ad-hoc signature: enough to run on this Mac and to use the Keychain.
+# Ad-hoc signature: enough to run on this Mac.
 codesign --force --sign - "$APP"
 echo "Built $(pwd)/$APP"
