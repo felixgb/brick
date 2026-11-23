@@ -6,7 +6,7 @@ longer working list. Items are roughly ordered by priority within each section.
 ## Get to a working state
 
 - [x] Compile the Linux Qt app for the first time and fix what breaks (one error: a helper named `sender` clashed with `QObject::sender`)
-- [ ] Compile the macOS To-do and Calendar tabs and the Claude button, and fix what breaks
+- [x] Compile the macOS To-do and Calendar tabs and the Claude button, and fix what breaks (compiled cleanly with Swift 6.4; nothing to fix)
 - [ ] Confirm the calendar day click is snappy after the tap-gesture fix (`CalendarView.swift`); profile with Instruments if not
 - [ ] Send one real request to the Anthropic API and check the extraction flow end to end
 - [ ] Sign in to real Gmail and Outlook accounts and fix whatever the stand-in OAuth server hid
@@ -24,7 +24,7 @@ longer working list. Items are roughly ordered by priority within each section.
 ## Mail
 
 - [ ] IMAP IDLE for push, replacing the two-minute poll
-- [x] Conversation threading in the message list (engine, Linux and macOS; macOS not compiled)
+- [x] Conversation threading in the message list (engine, Linux and macOS; macOS compiles, not tried by hand)
 - [ ] Thread by subject when the headers are missing or broken (not done on purpose: it merges unrelated mail)
 - [ ] Undo and moving a conversation need a conversation-aware design
 - [ ] HTML composing
@@ -33,28 +33,28 @@ longer working list. Items are roughly ordered by priority within each section.
 - [ ] Fastmail over JMAP
 - [x] Decode IMAP modified UTF-7 folder names (engine; tested)
 - [ ] Use CONDSTORE for flag reconciliation instead of re-reading the newest 2,000 UIDs
-- [x] Multiple identities / aliases per account (engine + Linux; macOS UI not done)
-- [x] Signatures (Linux; macOS UI not done)
+- [x] Multiple identities / aliases per account (engine + Linux; macOS compiles, not tried)
+- [x] Signatures (Linux; macOS compiles, not tried)
 - [ ] Undo for archive, trash and move. Needs an engine change first: `messages.move` deletes the local row at once and the message only reappears after the next sync, so there is nothing to move back
-- [x] Keyboard shortcuts for triage (Linux: A, Delete, M, S, J, K; macOS not done)
+- [x] Keyboard shortcuts for triage (Linux: A, Delete, M, S, J, K; macOS compiles, not tried)
 - [ ] Notifications for new mail
-- [x] Unified inbox across accounts (engine + Linux; macOS UI not done)
+- [x] Unified inbox across accounts (engine + Linux; macOS compiles, not tried)
 
 ## To-do and calendar
 
-- [x] Week and day views (Linux; macOS not done)
-- [x] Edit the end date of a multi-day item (Linux; macOS not done)
-- [x] Recurring items: daily/weekly/monthly/yearly with an optional end (engine + Linux; macOS not done)
+- [x] Week and day views (Linux; macOS compiles, not tried)
+- [x] Edit the end date of a multi-day item (Linux; macOS compiles, not tried)
+- [x] Recurring items: daily/weekly/monthly/yearly with an optional end (engine + Linux; macOS compiles, not tried)
 - [ ] Reminders
 - [ ] Calendar sync (CalDAV, Google, Outlook)
 - [ ] Sync items between machines
-- [x] Import and export `.ics` (engine + Linux; macOS not done)
-- [x] Open invitations in email as items (engine + Linux; macOS not done)
+- [x] Import and export `.ics` (engine + Linux; macOS compiles, not tried)
+- [x] Open invitations in email as items (engine + Linux; macOS compiles, not tried)
 - [x] To-do and Calendar tabs in the Linux app
 
 ## Configuration (`config.toml`)
 
-- [ ] Build the macOS side on a Mac: `ui.threaded` moved from UserDefaults to `config.toml` (written, not compiled)
+- [x] Build the macOS side on a Mac: `ui.threaded` moved from UserDefaults to `config.toml` (compiles; not run)
 - [ ] Front ends read `ui.threaded` once at startup; have the engine emit an event when `config.toml` changes so they can follow hand edits
 - [ ] Surface `config.status` errors (file edited into an invalid state) in the UI instead of only the log
 - [ ] Window geometry and splitter positions are still in QSettings on Linux; decide whether layout state belongs in the file
@@ -70,9 +70,9 @@ longer working list. Items are roughly ordered by priority within each section.
 
 All of this is now written in Swift (repeat, end-day and until controls, week and day views, `.ics` import and
 export under File, the invitation bar, All Inboxes, aliases and signatures in Settings > Accounts, J and K,
-conversations), but **none of it has been compiled or run**, because there is no Swift toolchain here:
+conversations). It now compiles cleanly with Swift 6.4, but **none of it has been run**:
 
-- [ ] Build on a Mac and fix whatever the compiler finds (`./macos/build-app.sh`)
+- [x] Build on a Mac and fix whatever the compiler finds (`./macos/build-app.sh`)
 - [ ] Try each feature by hand: tick a repeating item, import an `.ics`, open an invitation, send as an alias
 - [ ] Check the week view's layout and the double-click-to-add gesture against real clicks
 - [ ] Check J and K work in the message list (`onKeyPress` needs the list focused)
@@ -89,7 +89,7 @@ conversations), but **none of it has been compiled or run**, because there is no
 
 - [ ] Packaging (AppImage or Flatpak) and install of `brick.desktop`
 - [x] Decide how to run and inspect it for debugging: offscreen platform plus a debug socket (`linux/tools/`)
-- [x] Match macOS features (written, not compiled; see above)
+- [x] Match macOS features (compiles, not run; see above)
 
 ## Engine and interface
 

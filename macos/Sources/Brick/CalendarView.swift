@@ -129,9 +129,9 @@ struct CalendarView: View {
                         isToday: calendar.isDateInToday(date),
                         isSelected: key == selectedDay
                     )
+                    .equatable()
                     .frame(height: geometry.size.height / 6)
                     .contentShape(Rectangle())
-                    .equatable()
                     // Select on the first click. A count: 2 onTapGesture placed
                     // before a single-tap one makes SwiftUI wait out the
                     // double-click interval before selecting, which felt laggy.

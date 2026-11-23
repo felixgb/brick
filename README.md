@@ -21,14 +21,14 @@ background and reports back as an event.
 | Engine | Builds. Unit tests pass, and an end-to-end test passes against a real IMAP/SMTP server. |
 | C interface | Builds and runs from a C program. |
 | Linux Qt app | Builds and runs with Qt 6.8.3. Mail, To-do, Calendar (month, week, day), repeats, `.ics`, invitations, unified inbox, signatures, aliases and the Claude button, all driven and checked through the debug hook (headless, against stand-in servers). Not yet tried on a real desktop or a real mail account. |
-| macOS app | Mail builds and runs. The To-do and Calendar tabs, the Claude button and everything added since (week and day views, repeats, `.ics`, invitations, unified inbox, aliases, signatures, conversations) are written but **not yet compiled or run**. The calendar's slow day click was fixed in source, not yet confirmed on a Mac. |
+| macOS app | Builds cleanly (Swift 6.4, no warnings). Mail runs. The To-do and Calendar tabs, the Claude button and everything added since (week and day views, repeats, `.ics`, invitations, unified inbox, aliases, signatures, conversations) compile but have **not yet been tried by hand**. The calendar's slow day click was fixed in source, not yet confirmed on a Mac. |
 | Claude extraction | Tested against a stand-in server only; no request has been sent to the real API. |
 | Keychain storage (macOS) | Compiles; not exercised (tests use the in-memory store). |
 | Secrets file (Linux) | Unit-tested, and checked once through the running app. |
-| `config.toml` | Engine unit- and API-tested; on Linux the conversations toggle checked through the running app (headless). The macOS side of `ui.threaded` is written but not yet compiled. |
+| `config.toml` | Engine unit- and API-tested; on Linux the conversations toggle checked through the running app (headless). The macOS side of `ui.threaded` compiles but has not been run. |
 | Gmail and Outlook sign-in | The OAuth flow is tested against a stand-in server, not against Google or Microsoft. |
 
-Expect compile errors in anything marked as not yet compiled.
+Expect bugs in anything marked as not yet tried or run.
 
 ## What works in the engine
 

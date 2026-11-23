@@ -47,7 +47,7 @@ cmake --build linux/build                         # also runs `cargo build --rel
 ./macos/build-app.sh && open macos/Brick.app
 ```
 
-There is no Swift toolchain on this Linux machine, so macOS code cannot be compiled or run here. Anything written in `macos/` is unverified until built on a Mac; say so rather than claiming it works.
+There is no Swift toolchain on this Linux machine, so macOS code cannot be compiled or run here. Anything written in `macos/` is unverified until built on a Mac; say so rather than claiming it works. On a Mac (Swift 6.4 is installed there), `make macos` builds it; compile after any Swift change and record in README/TODO what was compiled versus actually run.
 
 ## Running the Linux app headless (how to check UI changes)
 

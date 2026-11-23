@@ -3,7 +3,8 @@
 set -eu
 cd "$(dirname "$0")"
 
-(cd .. && cargo build --release -p brick-core)
+# Match the Swift package's minimum macOS so the linker doesn't warn about every object.
+(cd .. && MACOSX_DEPLOYMENT_TARGET=14.0 cargo build --release -p brick-core)
 swift build -c release
 
 APP=Brick.app
