@@ -77,6 +77,23 @@ conversations). It now compiles cleanly with Swift 6.4, but **none of it has bee
 - [ ] Check the week view's layout and the double-click-to-add gesture against real clicks
 - [ ] Check J and K work in the message list (`onKeyPress` needs the list focused)
 
+## iPhone app
+
+Draft in `ios/`, sharing `macos/Sources/Shared` (engine wrapper, models, `AppModel`, a few views) with the Mac.
+Runs in the simulator against a seeded store; nothing below has been tried yet unless ticked.
+
+- [x] Xcode project that builds the engine for the device or simulator and links it
+- [x] Mail (mailboxes, list, reader, compose), To-do, month calendar, item editor; seen in simulator screenshots
+- [ ] Try swipe actions, sending, adding a real password account, attachments (Quick Look), `.ics` import and export
+- [x] Install on a phone (`make -C ios install`): installs and launches on an iPhone 12 mini
+- [ ] Use it on the phone with a real account
+- [ ] Gmail and Outlook sign-in: needs an engine change from the loopback redirect to a custom URL scheme
+      (or `ASWebAuthenticationSession`) and iOS-type OAuth client IDs
+- [ ] Check background refresh actually runs (`BGAppRefreshTask`; can't be triggered from `simctl`)
+- [ ] Claude button and review sheet; Claude API key screen (for now: edit `config.toml` in the Files app)
+- [ ] Week and day calendar views; conversation view in the reader; app icon
+- [ ] Launch in the simulator takes ~15 s while dyld loads the debug build; check a Release build and the device
+
 ## Linux app
 
 - [ ] Try it on a real desktop and a real mail account (so far only run headless against stand-in servers)

@@ -11,7 +11,10 @@ let package = Package(
         .executableTarget(
             name: "Brick",
             dependencies: ["CBrick"],
-            path: "Sources/Brick",
+            // Shared/ is also compiled into the iOS app (ios/).
+            path: "Sources",
+            exclude: ["CBrick"],
+            sources: ["Brick", "Shared"],
             linkerSettings: [
                 .unsafeFlags(["-L../target/release"]),
                 .linkedLibrary("brick_core"),

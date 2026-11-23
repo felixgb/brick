@@ -252,7 +252,7 @@ struct MessageWebView: NSViewRepresentable {
                 return
             }
             if let url = navigationAction.request.url, ["https", "http", "mailto"].contains(url.scheme ?? "") {
-                NSWorkspace.shared.open(url)
+                openExternally(url)
             }
             decisionHandler(.cancel)
         }

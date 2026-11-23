@@ -1,11 +1,12 @@
 # Brick
 
-A desktop mail client with a built-in to-do list and calendar, on one Rust engine with two native front ends.
+A mail client with a built-in to-do list and calendar, on one Rust engine with native front ends for Linux, macOS and iPhone.
 
 ```
 core/    Rust engine: local SQLite store, IMAP sync, SMTP, OAuth, HTML sanitising
 linux/   Qt 6 Widgets app (C++)
-macos/   SwiftUI app
+macos/   SwiftUI app; macos/Sources/Shared is also compiled into the iPhone app
+ios/     SwiftUI iPhone app (Xcode project)
 ```
 
 The front ends hold no mail logic. They call the engine through four C
@@ -22,6 +23,7 @@ background and reports back as an event.
 | C interface | Builds and runs from a C program. |
 | Linux Qt app | Builds and runs with Qt 6.8.3. Mail, To-do, Calendar (month, week, day), repeats, `.ics`, invitations, unified inbox, signatures, aliases and the Claude button, all driven and checked through the debug hook (headless, against stand-in servers). Not yet tried on a real desktop or a real mail account. |
 | macOS app | Builds cleanly (Swift 6.4, no warnings). Mail runs. The To-do and Calendar tabs, the Claude button and everything added since (week and day views, repeats, `.ics`, invitations, unified inbox, aliases, signatures, conversations) compile but have **not yet been tried by hand**. The calendar's slow day click was fixed in source, not yet confirmed on a Mac. |
+| iPhone app | Draft. Builds for the simulator (Xcode 27, iOS 26 minimum) and runs there against a seeded demo store: inbox, message reader, compose, To-do, month calendar and the item editor were looked at in screenshots. Swipe actions, sending, adding a real account, attachments, `.ics` import/export, background refresh and Settings have **not been tried**. Installs and launches on an iPhone 12 mini; not yet used there with a real account. Gmail and Outlook sign-in don't work on iPhone (the loopback redirect can't be reached while the app is suspended); password accounts only. No Claude button yet. |
 | Claude extraction | Tested against a stand-in server only; no request has been sent to the real API. |
 | Secrets in `config.toml` | Unit-tested (including moving an old `secrets.json` in). Not yet checked through either running app. |
 | `config.toml` | Engine unit- and API-tested; on Linux the conversations toggle checked through the running app (headless). The macOS side of `ui.threaded` compiles but has not been run. |
@@ -156,6 +158,19 @@ Needs Rust and Xcode 15 or later, on macOS 14 or later.
 ./macos/build-app.sh
 open macos/Brick.app
 ```
+
+### iPhone
+
+Needs Rust with the iOS targets (`rustup target add aarch64-apple-ios aarch64-apple-ios-sim`)
+and Xcode 27. The Xcode project builds the engine itself.
+
+```sh
+make -C ios simulator      # build and run in the iPhone 17 simulator
+make -C ios install        # build and install on the phone set in ios/Makefile
+```
+
+`config.toml` is kept in the app's Documents folder, so it shows in the Files
+app under On My iPhone › Brick and can be edited there.
 
 ## Setting up accounts
 

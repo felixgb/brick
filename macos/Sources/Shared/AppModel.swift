@@ -1,7 +1,20 @@
-import AppKit
 import Foundation
 import Observation
-import UniformTypeIdentifiers
+#if canImport(AppKit)
+import AppKit
+#elseif canImport(UIKit)
+import UIKit
+#endif
+
+/// Opens a link outside the app: the browser, or the mail composer for mailto.
+@MainActor
+func openExternally(_ url: URL) {
+    #if canImport(AppKit)
+    NSWorkspace.shared.open(url)
+    #elseif canImport(UIKit)
+    UIApplication.shared.open(url)
+    #endif
+}
 
 enum SendState: Equatable {
     case sending
@@ -87,6 +100,15 @@ final class AppModel {
         do {
             let support = try FileManager.default.url(
                 for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+            #if os(iOS)
+            // config.toml goes in Documents, which the Files app shows, so it can be
+            // edited on the phone; the mail store stays out of sight in Application Support.
+            if getenv("BRICK_CONFIG") == nil,
+                let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+            {
+                setenv("BRICK_CONFIG", documents.appendingPathComponent("config.toml").path, 1)
+            }
+            #endif
             let core = try Core(dataDirectory: support.appendingPathComponent("Brick", isDirectory: true))
             self.core = core
             self.startupError = nil
@@ -344,20 +366,30 @@ final class AppModel {
         }
     }
 
+    /// Moves messages (whole conversations when grouped) without picking another
+    /// one to show: for swipe actions on rows that aren't open.
+    func move(_ ids: Set<Int64>, to destination: String) {
+        guard let core, !ids.isEmpty else { return }
+        let all = expanded(ids)
+        guard attempt({ try core.send("messages.move", ["ids": Array(all), "to": destination]) }) else { return }
+        refreshTask?.cancel()
+        selection.subtract(all)
+        loadMessages()
+    }
+
     func syncNow() {
         attempt { try core?.send("sync.now") }
     }
 
-    func saveAttachment(_ attachment: Attachment) {
-        guard let core, let id = detail?.message.id else { return }
-        let panel = NSSavePanel()
-        panel.nameFieldStringValue = attachment.name
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        attempt { try core.send("attachments.save", ["id": id, "index": attachment.index, "path": url.path]) }
+    /// Writes an attachment of the open message to `url`.
+    @discardableResult
+    func saveAttachment(_ attachment: Attachment, to url: URL) -> Bool {
+        guard let core, let id = detail?.message.id else { return false }
+        return attempt { try core.send("attachments.save", ["id": id, "index": attachment.index, "path": url.path]) }
     }
 
     @discardableResult
-    private func attempt(_ work: () throws -> Void) -> Bool {
+    func attempt(_ work: () throws -> Void) -> Bool {
         do {
             try work()
             return true
@@ -430,31 +462,20 @@ final class AppModel {
         }
     }
 
-    private static var calendarTypes: [UTType] { [UTType(filenameExtension: "ics")].compactMap { $0 } }
-
-    func exportCalendar() {
-        guard let core else { return }
-        let panel = NSSavePanel()
-        panel.nameFieldStringValue = "Brick calendar.ics"
-        panel.allowedContentTypes = Self.calendarTypes
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            let text = (try core.send("items.export_ics") as? String) ?? ""
-            try text.write(to: url, atomically: true, encoding: .utf8)
-            notify("Exported to \(url.lastPathComponent).")
-        } catch {
-            banner = error.localizedDescription
-        }
+    /// Every item as the text of an iCalendar file.
+    func calendarText() throws -> String {
+        guard let core else { throw CoreError(message: "The mail store isn't open.") }
+        return (try core.send("items.export_ics") as? String) ?? ""
     }
 
-    func importCalendar() {
+    /// Imports calendar files and reports what happened.
+    func importCalendars(_ urls: [URL]) {
         guard let core else { return }
-        let panel = NSOpenPanel()
-        panel.allowedContentTypes = Self.calendarTypes
-        panel.allowsMultipleSelection = true
-        guard panel.runModal() == .OK else { return }
         var added = 0, skipped = 0, dropped = 0
-        for url in panel.urls {
+        for url in urls {
+            // Files picked on iOS are outside the sandbox until opened this way.
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
             do {
                 let text: String
                 if let utf8 = try? String(contentsOf: url, encoding: .utf8) {
@@ -646,7 +667,7 @@ final class AppModel {
                 try core.send("settings.set", ["key": oauth.clientSecretKey, "value": clientSecret])
                 let start: OAuthStart = try core.call("accounts.oauth", fields)
                 if let url = URL(string: start.authUrl) {
-                    NSWorkspace.shared.open(url)
+                    openExternally(url)
                 }
                 addAccountState = .waiting("Finish signing in in your browser…")
             } else {

@@ -16,7 +16,7 @@ GREENMAIL_NAME  ?= brick-greenmail
 
 .DEFAULT_GOAL := linux
 .PHONY: help core linux configure run install test test-live greenmail-start greenmail-stop \
-        headless headless-stop headless-restart headless-log shot macos fmt clippy clean distclean
+        headless headless-stop headless-restart headless-log shot macos ios-sim fmt clippy clean distclean
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | \
@@ -90,6 +90,9 @@ shot: ## Screenshot the headless app to /tmp/brick.png (override with SHOT=...)
 
 macos: ## Build macos/Brick.app (macOS only)
 	./macos/build-app.sh
+
+ios-sim: ## Build the iPhone app and run it in the simulator (macOS only)
+	$(MAKE) -C ios simulator
 
 # ---- Cleanup --------------------------------------------------------------
 

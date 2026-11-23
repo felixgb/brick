@@ -1,0 +1,5 @@
+// Lets Swift `import CBrick`, as the macOS SwiftPM package does.
+module CBrick {
+    header "../../core/include/brick.h"
+    export *
+}

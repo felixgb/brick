@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Brick is a desktop mail client with a built-in to-do list and calendar: one Rust engine (`core/`) and two native front ends, Qt 6 Widgets in C++ (`linux/`) and SwiftUI (`macos/`). README.md has the user-facing feature list and a status table; TODO.md is the longer working list.
+Brick is a mail client with a built-in to-do list and calendar: one Rust engine (`core/`) and three native front ends, Qt 6 Widgets in C++ (`linux/`), SwiftUI for the Mac (`macos/`) and SwiftUI for iPhone (`ios/`). README.md has the user-facing feature list and a status table; TODO.md is the longer working list.
 
 ## Commands
 
@@ -21,6 +21,7 @@ make headless-restart     # rebuild and restart the headless app
 make headless-stop / headless-log
 make shot SHOT=/tmp/x.png # screenshot the headless app (default /tmp/brick.png)
 make macos                # build macos/Brick.app (Mac only)
+make ios-sim              # build the iPhone app and run it in the simulator (Mac only)
 make clean / distclean
 ```
 
@@ -47,7 +48,7 @@ cmake --build linux/build                         # also runs `cargo build --rel
 ./macos/build-app.sh && open macos/Brick.app
 ```
 
-There is no Swift toolchain on this Linux machine, so macOS code cannot be compiled or run here. Anything written in `macos/` is unverified until built on a Mac; say so rather than claiming it works. On a Mac (Swift 6.4 is installed there), `make macos` builds it; compile after any Swift change and record in README/TODO what was compiled versus actually run.
+Work happens on both a Linux machine (no Swift toolchain) and a Mac (Xcode 27, Swift 6.4, iOS simulators). On Linux, anything written in `macos/` or `ios/` is unverified; say so rather than claiming it works. On the Mac, compile after any Swift change (`make macos`, `make -C ios build`); a change to `macos/Sources/Shared` must build for both. Record in README/TODO what was compiled versus actually run.
 
 ## Running the Linux app headless (how to check UI changes)
 
@@ -70,6 +71,15 @@ Environment variables:
 - `BRICK_ANTHROPIC_BASE_URL` — point Claude extraction at `linux/tools/fake-claude.py` instead of the real API. Overrides `claude.base_url`.
 - `BRICK_TEST_SERVER=1` — enable the live IMAP/SMTP test.
 
+## iPhone app (`ios/`)
+
+- `ios/Brick.xcodeproj` uses file-system-synchronized folders: every file in `ios/Brick/` and in `macos/Sources/Shared/` is compiled in, with no project edits. Shared code must build for macOS and iOS (`#if canImport(AppKit)` / `UIKit` where they differ; Mac-only panels are in `macos/Sources/Brick/AppModel+Mac.swift`). The macOS SwiftPM target compiles `Sources/Brick` and `Sources/Shared` as one module.
+- The "Build engine" phase runs `ios/build-engine.sh`, which cargo-builds `brick-core` for `aarch64-apple-ios` or `aarch64-apple-ios-sim` in a clean environment (Xcode's `SDKROOT` breaks cargo build scripts). `import CBrick` works through `ios/CBrick/module.modulemap`.
+- `config.toml` lives in the app's Documents folder (exposed to the Files app); `AppModel` sets `BRICK_CONFIG` on iOS. The store is in Application Support.
+- `make -C ios simulator` builds, installs and launches; `xcrun simctl io "iPhone 17" screenshot out.png` captures it. The first frame takes ~15 s in the simulator (dyld loading the debug build). `simctl` cannot tap: to reach a screen, launch with `SIMCTL_CHILD_<NAME>=value` and read it in a temporary `.task` that sets `AppModel` state; remove it afterwards. To get data, stop the app and run `linux/tools/seed-demo.py` on `$(xcrun simctl get_app_container "iPhone 17" st.mm.fgb.brick data)/Library/Application Support/Brick/brick.sqlite`.
+- In a collapsed `NavigationSplitView` under a `TabView`, a `.bottomBar` toolbar doesn't appear and a `safeAreaInset` around the split view is drawn over; the reader has its own action bar and banners attach to each column.
+- Signing: Personal Team `3L99396TNK`, bundle id `st.mm.fgb.brick`; device installs expire after 7 days.
+
 ## Architecture
 
 **The engine owns everything; front ends hold no mail logic.** The boundary is four C functions in `core/include/brick.h` (`brick_open`, `brick_call`, `brick_string_free`, `brick_close`): JSON request in, JSON response out (`{"ok": ...}` or `{"error": "..."}`), plus JSON events delivered on a background thread via the callback passed to `brick_open`.
@@ -82,7 +92,7 @@ Adding or changing an engine method touches, in order:
 1. `core/src/engine.rs` — `Engine::dispatch` is the single `match method { ... }` routing every request.
 2. The logic in the relevant module (`store.rs` for SQL, `sync.rs` for network work, `items.rs`, `ics.rs`, `claude.rs`, `threads.rs`, …).
 3. `core/include/brick.h` (documentation).
-4. Each front end: `linux/src/Core.{h,cpp}` and `macos/Sources/Brick/Core.swift` are thin wrappers over the C API; the UI code calls methods by name string and listens for events (Linux: `Core::event` signal; macOS: `AppModel.swift`).
+4. Each front end: `linux/src/Core.{h,cpp}` and `macos/Sources/Shared/Core.swift` (Mac and iPhone) are thin wrappers over the C API; the UI code calls methods by name string and listens for events (Linux: `Core::event` signal; Mac and iPhone: `macos/Sources/Shared/AppModel.swift`).
 
 Engine modules worth knowing:
 - `config.rs` — **all settings live in `config.toml`** (data dir, or `BRICK_CONFIG`): typed `Config` struct with serde defaults and `deny_unknown_fields`, a commented `TEMPLATE` written on first open (a test checks its commented defaults equal `Config::default()`), re-read when the file's mtime/size changes, edited in place with `toml_edit` so comments survive. `settings.get/set` go through `ConfigFile::setting/set_setting`; old flat keys (`claude_model`, `aliases_<id>`, `google_client_id`, …) are mapped in `resolve`. New tunables: add a field + default, a commented line in `TEMPLATE`, and read it via `inner.config.get()` at the point of use (not cached), so hand edits apply live. The SQLite `settings` table is legacy, read only to migrate old values on open. Secrets live in this file too (`accounts.<id>.password`, `accounts.<id>.refresh_token`, `claude.api_key`): `ConfigFile` implements `SecretStore`, and the file is kept at mode 0600.
