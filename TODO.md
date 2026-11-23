@@ -155,7 +155,8 @@ Polish and housekeeping:
 - [ ] Document panic and error behaviour at the C boundary in `brick.h`
 - [ ] Version the JSON protocol, or add a `version` method, so front ends can detect mismatches
 - [ ] Integration test that drives the engine through the C interface from a C program
-- [ ] Schema migrations for the SQLite store
+- [x] Schema migrations for the SQLite store (`migrations.rs`, `PRAGMA user_version`; unit-tested, and a copy of the Mac's real 1 GB store upgraded in 3 s)
+- [ ] The pre-upgrade backup is a full copy (1 GB for the Mac's store); decide whether to keep only the newest, or prune after a successful start
 
 ## Housekeeping
 

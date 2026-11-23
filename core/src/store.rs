@@ -7,7 +7,9 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-const SCHEMA: &str = r#"
+/// The mail tables as of schema version 1. Frozen: changes go in a new step in
+/// `migrations.rs`.
+pub const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -162,21 +164,20 @@ const FOLDER_COLS: &str = "id, account_id, path, name, role, selectable, unread,
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)?;
-        Self::init(conn)
+        Self::init(conn, Some(path))
     }
 
     pub fn open_in_memory() -> Result<Self> {
-        Self::init(Connection::open_in_memory()?)
+        Self::init(Connection::open_in_memory()?, None)
     }
 
-    fn init(conn: Connection) -> Result<Self> {
+    fn init(mut conn: Connection, path: Option<&Path>) -> Result<Self> {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
+        crate::migrations::run(&mut conn, path)?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
-        conn.execute_batch(SCHEMA)?;
-        conn.execute_batch(crate::items::SCHEMA)?;
-        crate::items::migrate(&conn)?;
-        crate::threads::migrate(&conn)?;
+        // Threads messages stored before threading existed (a no-op after that).
+        crate::threads::backfill(&conn)?;
         Ok(Self { conn: Arc::new(Mutex::new(conn)) })
     }
 
@@ -897,7 +898,7 @@ mod tests {
                (1, 1, 1, 'a@x', '', '', 1), (1, 1, 2, 'b@x', 'a@x', 'a@x', 2);",
         )
         .unwrap();
-        let s = Store::init(conn).unwrap();
+        let s = Store::init(conn, None).unwrap();
         assert_eq!(s.count_threads(&Scope::Folder(1)).unwrap(), 1);
     }
 }

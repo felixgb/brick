@@ -10,25 +10,16 @@
 use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension};
 
+/// Threading's indexes, part of schema version 1 (see `migrations.rs`).
 pub const SCHEMA: &str = "
 CREATE INDEX IF NOT EXISTS messages_by_thread ON messages(thread_id);
 CREATE INDEX IF NOT EXISTS messages_by_header_id ON messages(account_id, message_id);
 CREATE INDEX IF NOT EXISTS messages_by_parent ON messages(account_id, in_reply_to);
 ";
 
-/// Adds the column to databases made before threading, then threads their messages.
-pub fn migrate(db: &Connection) -> Result<()> {
-    let has = db
-        .prepare("SELECT 1 FROM pragma_table_info('messages') WHERE name = 'thread_id'")?
-        .exists([])?;
-    if !has {
-        db.execute("ALTER TABLE messages ADD COLUMN thread_id INTEGER NOT NULL DEFAULT 0", [])?;
-    }
-    db.execute_batch(SCHEMA)?;
-    backfill(db)
-}
-
-fn backfill(db: &Connection) -> Result<()> {
+/// Threads messages that have no conversation yet: those stored before
+/// threading existed. Cheap when there are none.
+pub fn backfill(db: &Connection) -> Result<()> {
     let todo: Vec<(i64, i64, String, String, String)> = {
         let mut st = db.prepare(
             "SELECT id, account_id, message_id, in_reply_to, refs FROM messages

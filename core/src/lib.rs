@@ -11,6 +11,7 @@ pub mod ffi;
 pub mod ics;
 pub mod imap;
 pub mod items;
+pub mod migrations;
 pub mod mime;
 pub mod model;
 pub mod oauth;

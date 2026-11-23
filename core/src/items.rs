@@ -8,6 +8,8 @@ use chrono::{Days, Months, NaiveDate, NaiveTime};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 
+/// The items table as of schema version 1. Frozen: changes go in a new step in
+/// `migrations.rs`.
 pub const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS items (
     id                INTEGER PRIMARY KEY,
@@ -34,20 +36,6 @@ CREATE TABLE IF NOT EXISTS items (
 CREATE INDEX IF NOT EXISTS items_by_date ON items(date);
 CREATE INDEX IF NOT EXISTS items_by_source ON items(source_message_id);
 "#;
-
-/// Adds columns that databases made by earlier versions lack. Safe to run every start.
-pub fn migrate(db: &Connection) -> Result<()> {
-    for (column, ddl) in [
-        ("repeat_rule", "ALTER TABLE items ADD COLUMN repeat_rule TEXT NOT NULL DEFAULT ''"),
-        ("repeat_until", "ALTER TABLE items ADD COLUMN repeat_until TEXT"),
-    ] {
-        let has = db.prepare("SELECT 1 FROM pragma_table_info('items') WHERE name = ?1")?.exists([column])?;
-        if !has {
-            db.execute(ddl, [])?;
-        }
-    }
-    Ok(())
-}
 
 pub const REPEATS: [&str; 4] = ["daily", "weekly", "monthly", "yearly"];
 
@@ -405,24 +393,6 @@ mod tests {
         let last = get(&c, weekly.id).unwrap().unwrap();
         assert!(last.done, "the series has run out");
         assert_eq!(last.date.as_deref(), Some("2026-11-27"));
-    }
-
-    #[test]
-    fn migrate_adds_missing_columns() {
-        let c = Connection::open_in_memory().unwrap();
-        c.execute_batch(
-            "CREATE TABLE items (id INTEGER PRIMARY KEY, title TEXT NOT NULL, notes TEXT NOT NULL DEFAULT '',
-             location TEXT NOT NULL DEFAULT '', date TEXT, end_date TEXT, start_time TEXT, end_time TEXT,
-             done INTEGER NOT NULL DEFAULT 0, done_at INTEGER, source_account_id INTEGER,
-             source_message_id TEXT NOT NULL DEFAULT '', source_subject TEXT NOT NULL DEFAULT '',
-             source_from TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
-             INSERT INTO items(title, created_at, updated_at) VALUES('old', 1, 1);",
-        )
-        .unwrap();
-        migrate(&c).unwrap();
-        migrate(&c).unwrap(); // idempotent
-        let items = list(&c).unwrap();
-        assert_eq!((items[0].title.as_str(), items[0].repeat_rule.as_str()), ("old", ""));
     }
 
     #[test]

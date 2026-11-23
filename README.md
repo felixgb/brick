@@ -19,7 +19,7 @@ background and reports back as an event.
 
 | Part | State |
 |---|---|
-| Engine | Builds. Unit tests pass, and end-to-end tests pass against a real IMAP/SMTP server (GreenMail), including new mail arriving through IDLE. IDLE has not been tried against Fastmail, Gmail or Outlook. |
+| Engine | Builds. The store has versioned schema migrations, with a backup taken before each upgrade. Unit tests pass, and end-to-end tests pass against a real IMAP/SMTP server (GreenMail), including new mail arriving through IDLE. IDLE has not been tried against Fastmail, Gmail or Outlook. |
 | C interface | Builds and runs from a C program. |
 | Linux Qt app | Builds and runs with Qt 6.8.3. Mail, To-do, Calendar (month, week, day), repeats, `.ics`, invitations, unified inbox, signatures, aliases and the Claude button, all driven and checked through the debug hook (headless, against stand-in servers). Not yet tried on a real desktop or a real mail account. |
 | macOS app | Builds cleanly (Swift 6.4, no warnings). Mail runs. The To-do and Calendar tabs, the Claude button and everything added since (week and day views, repeats, `.ics`, invitations, unified inbox, aliases, signatures, conversations) compile but have **not yet been tried by hand**. The calendar's slow day click was fixed in source, not yet confirmed on a Mac. |
