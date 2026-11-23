@@ -10,7 +10,8 @@ longer working list. Items are roughly ordered by priority within each section.
 - [ ] Confirm the calendar day click is snappy after the tap-gesture fix (`CalendarView.swift`); profile with Instruments if not
 - [ ] Send one real request to the Anthropic API and check the extraction flow end to end
 - [ ] Sign in to real Gmail and Outlook accounts and fix whatever the stand-in OAuth server hid
-- [ ] Check secrets in `config.toml` through both running apps: add an account, rotate an OAuth token, set the Claude key
+- [ ] Check secrets in `config.toml` through the running apps: add an account, rotate an OAuth token, set the Claude key
+      (the iPhone has read a password and the Claude key from a `config.toml` copied from the Mac)
 - [ ] Run the end-to-end IMAP/SMTP test in CI
 
 ## Speed (the app's main promise)
@@ -73,6 +74,9 @@ export under File, the invitation bar, All Inboxes, aliases and signatures in Se
 conversations). It now compiles cleanly with Swift 6.4, but **none of it has been run**:
 
 - [x] Build on a Mac and fix whatever the compiler finds (`./macos/build-app.sh`)
+- [ ] Run the Mac app after `Core`, `Models`, `AppModel` and a few views moved to `macos/Sources/Shared` for the
+      iPhone (compiles; not launched since). Check attachment saving and `.ics` import/export, whose panels moved
+      to `AppModel+Mac.swift`
 - [ ] Try each feature by hand: tick a repeating item, import an `.ics`, open an invitation, send as an alias
 - [ ] Check the week view's layout and the double-click-to-add gesture against real clicks
 - [ ] Check J and K work in the message list (`onKeyPress` needs the list focused)
@@ -80,19 +84,55 @@ conversations). It now compiles cleanly with Swift 6.4, but **none of it has bee
 ## iPhone app
 
 Draft in `ios/`, sharing `macos/Sources/Shared` (engine wrapper, models, `AppModel`, a few views) with the Mac.
-Runs in the simulator against a seeded store; nothing below has been tried yet unless ticked.
+Checked in the simulator against a seeded store, and installed on an iPhone 12 mini where a real Fastmail
+account syncs (the account record and `config.toml` were copied from the Mac, not added in the app).
+
+Done:
 
 - [x] Xcode project that builds the engine for the device or simulator and links it
 - [x] Mail (mailboxes, list, reader, compose), To-do, month calendar, item editor; seen in simulator screenshots
-- [ ] Try swipe actions, sending, adding a real password account, attachments (Quick Look), `.ics` import and export
-- [x] Install on a phone (`make -C ios install`): installs and launches on an iPhone 12 mini
-- [ ] Use it on the phone with a real account
+- [x] Install on a phone (`make -C ios install`): installs, launches, and syncs a Fastmail account
+
+Try what is written but not yet used:
+
+- [ ] Add a password account through Add Account (the phone's account was copied in by hand)
+- [ ] Swipe actions in the message list: archive, delete, read/unread, flag
+- [ ] Send, reply, reply all and forward; From picker with aliases; signatures
+- [ ] Reader: flag, archive and delete buttons; mark unread; the conversation strip; "Show" remote images;
+      adding an invitation; opening an attachment in Quick Look
+- [ ] Search, pull to refresh, the conversations toggle, All Inboxes with two accounts
+- [ ] To-do: quick add, tick, swipe to delete; editor with repeats; "Open Email" from an item made from mail
+- [ ] Calendar: swipe and arrows between months, add on a day, `.ics` import (Files) and export (share sheet)
+- [ ] Settings: aliases and signature, remove an account
+- [ ] Check background refresh actually runs (`BGAppRefreshTask`; can't be triggered from `simctl`), and that the
+      store and `config.toml` can be opened while the phone is locked (file protection class)
+- [ ] Editing `config.toml` in the Files app is picked up by the running app
+
+Missing:
+
 - [ ] Gmail and Outlook sign-in: needs an engine change from the loopback redirect to a custom URL scheme
-      (or `ASWebAuthenticationSession`) and iOS-type OAuth client IDs
-- [ ] Check background refresh actually runs (`BGAppRefreshTask`; can't be triggered from `simctl`)
-- [ ] Claude button and review sheet; Claude API key screen (for now: edit `config.toml` in the Files app)
-- [ ] Week and day calendar views; conversation view in the reader; app icon
-- [ ] Launch in the simulator takes ~15 s while dyld loads the debug build; check a Release build and the device
+      (or `ASWebAuthenticationSession`) and iOS-type OAuth client IDs; until then Add Account says to use an app
+      password with Other (IMAP)
+- [ ] Claude button and review sheet, and a Claude key and model screen (for now: edit `config.toml` in Files)
+- [ ] Week and day calendar views
+- [ ] App icon from `icon/brick.svg`
+- [ ] Select several messages at once (edit mode) for bulk archive, delete and flag
+- [ ] Notifications for new mail (needs background refresh first; there is no push without a server)
+- [ ] Import and export of `.ics` attachments straight from the reader (open in Brick from other apps)
+- [ ] iPad layout (the target is iPhone only)
+- [ ] A way to move an account from the Mac to the phone (done by hand: the `accounts` row with `sqlite3` and
+      `config.toml` with `devicectl device copy`); or just make Add Account the answer
+- [ ] To-dos and calendar items don't reach the phone from the Mac (see "Sync items between machines")
+
+Polish and housekeeping:
+
+- [ ] Plain-text mail shows in a small monospaced font; use a readable proportional one
+- [ ] Attachments opened in Quick Look are left in the temporary folder; clear them
+- [ ] Launch in the simulator takes ~15 s while dyld loads the debug build; check a Release build on the device
+- [ ] The Debug app is 17 MB; check the Release size with the engine stripped
+- [ ] A permanent debug hook for driving screens (like the Linux debug socket), since `simctl` can't tap and the
+      screenshot harness has to be written and removed each time
+- [ ] Free Personal Team signing: device installs expire after 7 days (`make -C ios install` again)
 
 ## Linux app
 
@@ -106,7 +146,7 @@ Runs in the simulator against a seeded store; nothing below has been tried yet u
 
 - [ ] Packaging (AppImage or Flatpak) and install of `brick.desktop`
 - [x] Decide how to run and inspect it for debugging: offscreen platform plus a debug socket (`linux/tools/`)
-- [x] Match macOS features (compiles, not run; see above)
+- [x] Match macOS features (the Mac side compiles but is not run; see above)
 
 ## Engine and interface
 
@@ -117,6 +157,6 @@ Runs in the simulator against a seeded store; nothing below has been tried yet u
 
 ## Housekeeping
 
-- [ ] CI for engine tests, and for both front ends once they compile
-- [ ] Link this file from the README
+- [ ] CI for engine tests, and builds of the three front ends (Linux, macOS, iPhone)
+- [ ] Link this file from the README (README's "Not done yet" is the short list but doesn't point here)
 - [ ] Licence
