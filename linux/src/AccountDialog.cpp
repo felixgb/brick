@@ -29,8 +29,6 @@ AccountDialog::AccountDialog(Core *core, QWidget *parent) : QDialog(parent), m_c
     m_password = new QLineEdit;
     m_password->setEchoMode(QLineEdit::Password);
     m_clientId = new QLineEdit;
-    m_clientSecret = new QLineEdit;
-    m_clientSecret->setEchoMode(QLineEdit::Password);
     m_username = new QLineEdit;
     m_username->setPlaceholderText(tr("Defaults to the email address"));
     m_imapHost = new QLineEdit;
@@ -50,7 +48,6 @@ AccountDialog::AccountDialog(Core *core, QWidget *parent) : QDialog(parent), m_c
     m_form->addRow(tr("Email"), m_email);
     m_form->addRow(tr("Password"), m_password);
     m_form->addRow(tr("OAuth client ID"), m_clientId);
-    m_form->addRow(tr("OAuth client secret"), m_clientSecret);
     m_form->addRow(tr("Username"), m_username);
     m_form->addRow(tr("IMAP server"), m_imapHost);
     m_form->addRow(tr("IMAP port"), m_imapPort);
@@ -96,20 +93,16 @@ void AccountDialog::providerChanged() {
     const QJsonObject oauth = p.value("oauth").toObject();
     const bool isOAuth = !oauth.isEmpty();
     const bool isCustom = p.value("id").toString() == QLatin1String("custom");
-    const bool needsSecret = p.value("id").toString() == QLatin1String("gmail");
 
     setRowVisible(m_password, !isOAuth);
     setRowVisible(m_clientId, isOAuth);
-    setRowVisible(m_clientSecret, isOAuth && needsSecret);
     for (QWidget *w : {static_cast<QWidget *>(m_username), static_cast<QWidget *>(m_imapHost),
                        static_cast<QWidget *>(m_imapPort), static_cast<QWidget *>(m_smtpHost),
                        static_cast<QWidget *>(m_smtpPort), static_cast<QWidget *>(m_smtpSecurity)})
         setRowVisible(w, isCustom);
 
-    if (isOAuth) {
+    if (isOAuth)
         m_clientId->setText(m_core->call("settings.get", {{"key", oauth.value("client_id_key")}}).toString());
-        m_clientSecret->setText(m_core->call("settings.get", {{"key", oauth.value("client_secret_key")}}).toString());
-    }
     m_imapPort->setValue(p.value("imap_port").toInt(993));
     m_smtpPort->setValue(p.value("smtp_port").toInt(465));
     m_hint->setText(p.value("hint").toString());
@@ -138,8 +131,6 @@ void AccountDialog::submit() {
     if (!oauth.isEmpty()) {
         m_core->call("settings.set",
                      {{"key", oauth.value("client_id_key")}, {"value", m_clientId->text().trimmed()}});
-        m_core->call("settings.set",
-                     {{"key", oauth.value("client_secret_key")}, {"value", m_clientSecret->text().trimmed()}});
         const QJsonObject r = m_core->call("accounts.oauth", params, &error).toObject();
         if (!error.isEmpty()) {
             m_status->setText(error);

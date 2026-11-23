@@ -273,9 +273,8 @@ pub const TEMPLATE: &str = r##"# Brick configuration.
 # threaded = true
 
 # OAuth client credentials for browser sign-in, one table per provider:
-#   [oauth.google]
-#   client_id = "1234-abcd.apps.googleusercontent.com"
-#   client_secret = "..."
+#   [oauth.microsoft]
+#   client_id = "00000000-0000-0000-0000-000000000000"
 [oauth]
 
 # Per-account options. The table name is the account's id. Brick writes the

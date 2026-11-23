@@ -9,7 +9,8 @@ longer working list. Items are roughly ordered by priority within each section.
 - [x] Compile the macOS To-do and Calendar tabs and the Claude button, and fix what breaks (compiled cleanly with Swift 6.4; nothing to fix)
 - [ ] Confirm the calendar day click is snappy after the tap-gesture fix (`CalendarView.swift`); profile with Instruments if not
 - [ ] Send one real request to the Anthropic API and check the extraction flow end to end
-- [ ] Sign in to real Gmail and Outlook accounts and fix whatever the stand-in OAuth server hid
+- [ ] Add a real Gmail account with an app password
+- [ ] Sign in to a real Outlook account and fix whatever the stand-in OAuth server hid
 - [ ] Check secrets in `config.toml` through the running apps: add an account, rotate an OAuth token, set the Claude key
       (the iPhone has read a password and the Claude key from a `config.toml` copied from the Mac)
 - [ ] Run the end-to-end IMAP/SMTP test in CI
@@ -110,7 +111,7 @@ Try what is written but not yet used:
 
 Missing:
 
-- [ ] Gmail and Outlook sign-in: needs an engine change from the loopback redirect to a custom URL scheme
+- [ ] Outlook sign-in (Gmail uses an app password and works): needs an engine change from the loopback redirect to a custom URL scheme
       (or `ASWebAuthenticationSession`) and iOS-type OAuth client IDs; until then Add Account says to use an app
       password with Other (IMAP)
 - [ ] Claude button and review sheet, and a Claude key and model screen (for now: edit `config.toml` in Files)

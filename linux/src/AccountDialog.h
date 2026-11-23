@@ -37,7 +37,6 @@ private:
     QLineEdit *m_email;
     QLineEdit *m_password;
     QLineEdit *m_clientId;
-    QLineEdit *m_clientSecret;
     QLineEdit *m_username;
     QLineEdit *m_imapHost;
     QSpinBox *m_imapPort;

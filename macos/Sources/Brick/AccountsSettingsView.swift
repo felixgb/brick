@@ -151,9 +151,6 @@ struct AddAccountSheet: View {
 
                 if provider?.oauth != nil {
                     TextField("OAuth client ID", text: $clientId)
-                    if providerId == "gmail" {
-                        SecureField("OAuth client secret", text: $clientSecret)
-                    }
                 } else {
                     SecureField("Password", text: $password)
                 }

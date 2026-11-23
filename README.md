@@ -23,17 +23,17 @@ background and reports back as an event.
 | C interface | Builds and runs from a C program. |
 | Linux Qt app | Builds and runs with Qt 6.8.3. Mail, To-do, Calendar (month, week, day), repeats, `.ics`, invitations, unified inbox, signatures, aliases and the Claude button, all driven and checked through the debug hook (headless, against stand-in servers). Not yet tried on a real desktop or a real mail account. |
 | macOS app | Builds cleanly (Swift 6.4, no warnings). Mail runs. The To-do and Calendar tabs, the Claude button and everything added since (week and day views, repeats, `.ics`, invitations, unified inbox, aliases, signatures, conversations) compile but have **not yet been tried by hand**. The calendar's slow day click was fixed in source, not yet confirmed on a Mac. |
-| iPhone app | Draft. Builds for the simulator (Xcode 27, iOS 26 minimum) and runs there against a seeded demo store: inbox, message reader, compose, To-do, month calendar and the item editor were looked at in screenshots. Swipe actions, sending, adding a real account, attachments, `.ics` import/export, background refresh and Settings have **not been tried**. Installed on an iPhone 12 mini, where a Fastmail account (copied over from the Mac) syncs. Gmail and Outlook sign-in don't work on iPhone (the loopback redirect can't be reached while the app is suspended); password accounts only. No Claude button yet. |
+| iPhone app | Draft. Builds for the simulator (Xcode 27, iOS 26 minimum) and runs there against a seeded demo store: inbox, message reader, compose, To-do, month calendar and the item editor were looked at in screenshots. Swipe actions, sending, adding a real account, attachments, `.ics` import/export, background refresh and Settings have **not been tried**. Installed on an iPhone 12 mini, where a Fastmail account (copied over from the Mac) syncs. Outlook sign-in doesn't work on iPhone (the loopback redirect can't be reached while the app is suspended); password accounts only. No Claude button yet. |
 | Claude extraction | Tested against a stand-in server only; no request has been sent to the real API. |
 | Secrets in `config.toml` | Unit-tested (including moving an old `secrets.json` in). Not yet checked through either running app. |
 | `config.toml` | Engine unit- and API-tested; on Linux the conversations toggle checked through the running app (headless). The macOS side of `ui.threaded` compiles but has not been run. |
-| Gmail and Outlook sign-in | The OAuth flow is tested against a stand-in server, not against Google or Microsoft. |
+| Outlook sign-in | The OAuth flow is tested against a stand-in server, not against Microsoft. Gmail uses an app password. |
 
 Expect bugs in anything marked as not yet tried or run.
 
 ## What works in the engine
 
-- Fastmail (app password), Gmail and Outlook (OAuth 2 with PKCE, XOAUTH2), and any IMAP/SMTP server
+- Fastmail and Gmail (app password), Outlook (OAuth 2 with PKCE, XOAUTH2), and any IMAP/SMTP server
 - Folder discovery with special-use roles (inbox, sent, archive, trash, junk)
 - Incremental sync: newest 300 messages per folder first, then history in the background
 - Flag changes and deletions made on other devices are picked up
@@ -181,13 +181,11 @@ password, with access to Mail (IMAP/SMTP). Use it as the password in Brick.
 
 ### Gmail
 
-Google only allows OAuth, and you need your own client ID.
-
-1. In the Google Cloud console, create a project and enable the Gmail API.
-2. Configure the OAuth consent screen as External and add your own address as a user.
-3. Set the publishing status to "In production". Left in "Testing", Google expires your sign-in every 7 days. You will see an "unverified app" warning when signing in; that is expected for a personal client.
-4. Create credentials → OAuth client ID → application type "Desktop app".
-5. Paste the client ID and client secret into Brick's Add account dialog.
+Turn on 2-Step Verification for your Google account, then create an app
+password at <https://myaccount.google.com/apppasswords>. In Brick choose
+Gmail and paste the 16-character app password as the password. No Google
+Cloud project or OAuth client ID is needed. (Workspace accounts whose admin
+has disabled app passwords can't use this.)
 
 ### Outlook
 
