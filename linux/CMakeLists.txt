@@ -46,5 +46,20 @@ target_link_libraries(brick PRIVATE
   ${BRICK_CORE_LIB} pthread dl m)
 target_compile_options(brick PRIVATE -Wall -Wextra)
 
+# The app icon, built in so the window has it even when Brick isn't installed.
+# PNGs rather than the SVG, so Qt's SVG module isn't needed.
+qt_add_resources(brick "icon"
+  PREFIX "/icon"
+  BASE ${BRICK_ROOT}/icon/png
+  FILES
+    ${BRICK_ROOT}/icon/png/brick-16.png
+    ${BRICK_ROOT}/icon/png/brick-32.png
+    ${BRICK_ROOT}/icon/png/brick-48.png
+    ${BRICK_ROOT}/icon/png/brick-64.png
+    ${BRICK_ROOT}/icon/png/brick-128.png
+    ${BRICK_ROOT}/icon/png/brick-256.png)
+
 install(TARGETS brick RUNTIME DESTINATION bin)
 install(FILES brick.desktop DESTINATION share/applications)
+install(FILES ${BRICK_ROOT}/icon/brick.svg DESTINATION share/icons/hicolor/scalable/apps)
+install(FILES ${BRICK_ROOT}/icon/png/brick-256.png DESTINATION share/icons/hicolor/256x256/apps RENAME brick.png)

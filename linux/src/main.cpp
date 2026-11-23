@@ -1,5 +1,6 @@
 #include <QApplication>
 #include <QDir>
+#include <QIcon>
 #include <QMessageBox>
 #include <QStandardPaths>
 
@@ -15,6 +16,12 @@ int main(int argc, char *argv[]) {
     QApplication::setApplicationDisplayName(QStringLiteral("Brick"));
     QApplication::setOrganizationName(QStringLiteral("brick"));
     QApplication::setDesktopFileName(QStringLiteral("brick"));
+
+    // The installed theme icon if there is one, else the copy built into the binary.
+    QIcon builtIn;
+    for (int size : {16, 32, 48, 64, 128, 256})
+        builtIn.addFile(QStringLiteral(":/icon/brick-%1.png").arg(size), QSize(size, size));
+    QApplication::setWindowIcon(QIcon::fromTheme(QStringLiteral("brick"), builtIn));
 
     // ~/.local/share/brick
     const QString dataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);

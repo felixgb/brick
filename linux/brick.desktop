@@ -4,6 +4,6 @@ Name=Brick
 GenericName=Mail Client
 Comment=Read and send email
 Exec=brick
-Icon=mail-client
+Icon=brick
 Categories=Network;Email;Qt;
 StartupWMClass=brick
