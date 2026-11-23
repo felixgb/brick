@@ -3,6 +3,7 @@
 use crate::model::*;
 use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension, Row};
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -457,6 +458,7 @@ impl Store {
         lo: u32,
         hi: u32,
         server: &[(u32, bool, bool, bool)],
+        skip: &HashSet<u32>,
     ) -> Result<bool> {
         use std::collections::HashMap;
         let mut db = self.db();
@@ -475,12 +477,15 @@ impl Store {
                     .collect::<rusqlite::Result<_>>()?;
                 m
             };
-            let mut present = std::collections::HashSet::new();
+            let mut present = HashSet::new();
             let mut upd = tx.prepare(
                 "UPDATE messages SET seen = ?3, flagged = ?4, answered = ?5 WHERE folder_id = ?1 AND uid = ?2",
             )?;
             for &(uid, seen, flagged, answered) in server {
                 present.insert(uid);
+                if skip.contains(&uid) {
+                    continue;
+                }
                 if let Some(&cur) = local.get(&uid) {
                     if cur != (seen, flagged, answered) {
                         upd.execute(params![folder_id, uid, seen, flagged, answered])?;
@@ -490,7 +495,7 @@ impl Store {
             }
             let mut del = tx.prepare("DELETE FROM messages WHERE folder_id = ?1 AND uid = ?2")?;
             for uid in local.keys() {
-                if !present.contains(uid) {
+                if !present.contains(uid) && !skip.contains(uid) {
                     del.execute(params![folder_id, uid])?;
                     changed = true;
                 }
@@ -757,11 +762,21 @@ mod tests {
         assert_eq!(rows.iter().map(|r| r.uid).collect::<Vec<_>>(), vec![3, 2, 1]);
 
         // Server says: uid 1 now read, uid 2 gone, uid 3 unchanged.
-        let changed = s.reconcile(f, 1, 3, &[(1, true, false, false), (3, false, false, false)]).unwrap();
+        let changed = s.reconcile(f, 1, 3, &[(1, true, false, false), (3, false, false, false)], &HashSet::new()).unwrap();
         assert!(changed);
         let rows = s.list_messages(f, 0, 10).unwrap();
         assert_eq!(rows.len(), 2);
         assert!(rows.iter().find(|r| r.uid == 1).unwrap().seen);
+
+        // A message with a change still on its way to the server is left alone:
+        // not reverted to the server's flags, and not deleted for being absent.
+        s.set_flagged(rows[0].id, true).unwrap();
+        let skip: HashSet<u32> = [rows[0].uid].into();
+        assert!(!s.reconcile(f, 1, 3, &[], &skip).unwrap() || s.list_messages(f, 0, 10).unwrap().len() == 1);
+        let kept = s.list_messages(f, 0, 10).unwrap();
+        assert!(kept.iter().any(|r| r.uid == rows[0].uid && r.flagged));
+        s.insert_messages(acc, f, &[msg(1, "Quarterly report"), msg(3, "Re: Lunch?")]).unwrap();
+        s.reconcile(f, 1, 3, &[(1, true, false, false), (3, false, false, false)], &HashSet::new()).unwrap();
 
         s.refresh_counts(f).unwrap();
         let folder = s.folder(f).unwrap().unwrap();

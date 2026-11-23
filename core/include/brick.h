@@ -49,7 +49,9 @@
  *                                                    from: send as one of the account's aliases (setting
  *                                                    aliases_<account id>); anything else is refused
  *                                                    -> then send_done | send_error (with token)
- *   sync.now
+ *   sync.now                                         sync every account now. New inbox mail also
+ *                                                    arrives unasked: each account keeps an IMAP
+ *                                                    IDLE connection on its inbox (setting sync.idle)
  *
  *   To-do and calendar items (one kind of thing; an item with no date is
  *   only a to-do). Dates are "YYYY-MM-DD" and times "HH:MM", local time.

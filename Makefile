@@ -38,7 +38,7 @@ greenmail-start: ## Start a fresh greenmail container
 	-@docker rm -f $(GREENMAIL_NAME) >/dev/null 2>&1
 	docker run --rm -d --name $(GREENMAIL_NAME) \
 	  -p 127.0.0.1:3143:3143 -p 127.0.0.1:3025:3025 \
-	  -e GREENMAIL_OPTS='-Dgreenmail.setup.test.all -Dgreenmail.hostname=0.0.0.0 -Dgreenmail.users=test:secret@example.com' \
+	  -e GREENMAIL_OPTS='-Dgreenmail.setup.test.all -Dgreenmail.hostname=0.0.0.0 -Dgreenmail.users=test:secret@example.com,idle:secret@example.com' \
 	  $(GREENMAIL_IMAGE)
 	@sleep 3
 

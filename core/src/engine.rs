@@ -457,6 +457,7 @@ impl Engine {
         for id in ids {
             let Some(m) = store.message(id)? else { continue };
             let (Some(acc), Some(folder)) = (store.account(m.account_id)?, store.folder(m.folder_id)?) else { continue };
+            let held = self.inner.pending.hold(folder.id, m.uid);
             let mut ops: Vec<(&'static str, bool)> = Vec::new();
             if let Some(v) = seen.filter(|v| *v != m.seen) {
                 store.set_seen(id, v)?;
@@ -472,6 +473,7 @@ impl Engine {
             folders.insert((acc.id, folder.id));
             let inner = self.inner.clone();
             self.runtime.spawn(async move {
+                let _held = held;
                 for (flag, on) in ops {
                     if let Err(e) = inner.push_flag(acc.clone(), folder.clone(), m.uid, flag, on).await {
                         inner.emit_error(Some(acc.id), &e.context("could not update the message on the server"));
@@ -524,10 +526,12 @@ impl Engine {
             }
 
             // Optimistic: the row disappears now; the destination picks it up on the next sync.
+            let held = self.inner.pending.hold(folder.id, m.uid);
             store.delete_message(id)?;
             folders.insert((acc.id, folder.id));
             let inner = self.inner.clone();
             self.runtime.spawn(async move {
+                let _held = held;
                 let account_id = acc.id;
                 if let Err(e) = inner.push_move(acc, folder, m.uid, dest).await {
                     inner.emit_error(Some(account_id), &e.context("could not move the message on the server"));

@@ -19,7 +19,7 @@ background and reports back as an event.
 
 | Part | State |
 |---|---|
-| Engine | Builds. Unit tests pass, and an end-to-end test passes against a real IMAP/SMTP server. |
+| Engine | Builds. Unit tests pass, and end-to-end tests pass against a real IMAP/SMTP server (GreenMail), including new mail arriving through IDLE. IDLE has not been tried against Fastmail, Gmail or Outlook. |
 | C interface | Builds and runs from a C program. |
 | Linux Qt app | Builds and runs with Qt 6.8.3. Mail, To-do, Calendar (month, week, day), repeats, `.ics`, invitations, unified inbox, signatures, aliases and the Claude button, all driven and checked through the debug hook (headless, against stand-in servers). Not yet tried on a real desktop or a real mail account. |
 | macOS app | Builds cleanly (Swift 6.4, no warnings). Mail runs. The To-do and Calendar tabs, the Claude button and everything added since (week and day views, repeats, `.ics`, invitations, unified inbox, aliases, signatures, conversations) compile but have **not yet been tried by hand**. The calendar's slow day click was fixed in source, not yet confirmed on a Mac. |
@@ -36,6 +36,7 @@ Expect bugs in anything marked as not yet tried or run.
 - Fastmail and Gmail (app password), Outlook (OAuth 2 with PKCE, XOAUTH2), and any IMAP/SMTP server
 - Folder discovery with special-use roles (inbox, sent, archive, trash, junk)
 - Incremental sync: newest 300 messages per folder first, then history in the background
+- New inbox mail is pushed through IMAP IDLE where the server supports it; every folder is still checked every two minutes
 - Flag changes and deletions made on other devices are picked up
 - Bodies fetched on demand and cached; the newest 30 inbox bodies are fetched ahead of time
 - Full-text search over headers and downloaded bodies (SQLite FTS5)
@@ -72,7 +73,6 @@ retries it on another model.
 - Calendar sync (CalDAV, Google, Outlook), and syncing items between machines
 - Repeats other than a plain daily, weekly, monthly or yearly one (every other week, on given weekdays)
 
-- Push (IMAP IDLE): mail is checked every two minutes and on demand
 - Grouping by subject when the headers don't link messages (threading uses Message-ID, In-Reply-To and References only)
 - HTML composing, sending attachments, drafts saved to the server
 - Fastmail over JMAP (it uses IMAP for now)

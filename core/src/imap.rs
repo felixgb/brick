@@ -192,6 +192,11 @@ pub async fn list_folders(s: &mut Session) -> Result<Vec<RemoteFolder>> {
     Ok(out)
 }
 
+/// Whether the server supports IDLE (RFC 2177).
+pub async fn supports_idle(s: &mut Session) -> Result<bool> {
+    Ok(s.capabilities().await?.has_str("IDLE"))
+}
+
 pub struct Selected {
     pub exists: u32,
     pub uid_validity: u32,

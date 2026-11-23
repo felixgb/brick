@@ -52,6 +52,9 @@ pub struct SyncConfig {
     pub reconcile_window: u32,
     pub prefetch_bodies: u32,
     pub step_timeout_secs: u64,
+    /// Keep a second connection per account waiting in IMAP IDLE on the inbox.
+    pub idle: bool,
+    pub idle_restart_secs: u64,
 }
 
 impl Default for SyncConfig {
@@ -63,6 +66,8 @@ impl Default for SyncConfig {
             reconcile_window: 2000,
             prefetch_bodies: 30,
             step_timeout_secs: 120,
+            idle: true,
+            idle_restart_secs: 1500,
         }
     }
 }
@@ -189,6 +194,7 @@ impl Config {
             ("sync.backfill_chunk", self.sync.backfill_chunk.into()),
             ("sync.reconcile_window", self.sync.reconcile_window.into()),
             ("sync.step_timeout_secs", self.sync.step_timeout_secs),
+            ("sync.idle_restart_secs", self.sync.idle_restart_secs),
             ("network.imap_connect_timeout_secs", self.network.imap_connect_timeout_secs),
             ("network.smtp_timeout_secs", self.network.smtp_timeout_secs),
             ("claude.max_tokens", self.claude.max_tokens.into()),
@@ -235,7 +241,8 @@ pub const TEMPLATE: &str = r##"# Brick configuration.
 # in plain text. Brick keeps this file readable only by you; don't share it.
 
 [sync]
-# Seconds between checks for new mail.
+# Seconds between checks of every folder. New mail in the inbox arrives sooner
+# when the server supports IDLE (see below).
 # poll_interval_secs = 120
 # Newest messages fetched when a folder is first seen.
 # initial_window = 300
@@ -247,6 +254,12 @@ pub const TEMPLATE: &str = r##"# Brick configuration.
 # prefetch_bodies = 30
 # Seconds to wait for the mail server to answer one command.
 # step_timeout_secs = 120
+# Keep one extra connection per account open in IMAP IDLE so the server can
+# announce new inbox mail as it arrives. Servers without IDLE fall back to the
+# poll above.
+# idle = true
+# Seconds before an IDLE is ended and restarted (servers drop it after 30 minutes).
+# idle_restart_secs = 1500
 
 [network]
 # imap_connect_timeout_secs = 20
@@ -772,9 +785,9 @@ mod tests {
         assert_eq!(cfg.account(4).unwrap().signature, "Best,\nA. Person");
 
         let t = text(&c);
-        assert!(t.contains("# Seconds between checks for new mail."), "comments survive:\n{t}");
+        assert!(t.contains("# Seconds between checks of every folder."), "comments survive:\n{t}");
         assert!(
-            t.contains("# Seconds between checks for new mail.\npoll_interval_secs = 300\n"),
+            t.contains("# when the server supports IDLE (see below).\npoll_interval_secs = 300\n"),
             "set in place of its commented default:\n{t}"
         );
         assert!(!t.contains("# poll_interval_secs = 120"));

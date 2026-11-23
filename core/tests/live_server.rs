@@ -2,9 +2,10 @@
 //!
 //! Start one with:
 //!   docker run --rm -d --name brick-greenmail -p 127.0.0.1:3143:3143 -p 127.0.0.1:3025:3025 \
-//!     -e GREENMAIL_OPTS='-Dgreenmail.setup.test.all -Dgreenmail.hostname=0.0.0.0 -Dgreenmail.users=test:secret@example.com' \
+//!     -e GREENMAIL_OPTS='-Dgreenmail.setup.test.all -Dgreenmail.hostname=0.0.0.0 -Dgreenmail.users=test:secret@example.com,idle:secret@example.com' \
 //!     greenmail/standalone:2.1.2
-//! then run:
+//! (or, without Docker, the same options as -D flags to
+//! `java -jar greenmail-standalone-2.1.2.jar` from Maven Central), then run:
 //!   BRICK_TEST_SERVER=1 cargo test -p brick-core --test live_server -- --nocapture
 
 use brick_core::imap::{self, Credential};
@@ -208,4 +209,83 @@ fn add_account_send_sync_read_flag_move() {
 
     call(&e, "accounts.remove", json!({ "id": account_id }));
     assert!(call(&e, "accounts.list", json!({})).as_array().unwrap().is_empty());
+}
+
+fn test_account(user: &str) -> Account {
+    Account {
+        id: 0,
+        email: format!("{user}@example.com"),
+        name: "Test".into(),
+        provider: "custom".into(),
+        auth: AuthKind::Password,
+        username: user.into(),
+        imap_host: "localhost".into(),
+        imap_port: 3143,
+        imap_security: Security::Plain,
+        smtp_host: "localhost".into(),
+        smtp_port: 3025,
+        smtp_security: Security::Plain,
+    }
+}
+
+/// New mail reaches the store through IDLE alone: the poll is set to an hour
+/// and `sync.now` is never called after the first pass.
+#[test]
+fn idle_picks_up_new_mail_without_polling() {
+    if std::env::var("BRICK_TEST_SERVER").is_err() {
+        eprintln!("skipped: set BRICK_TEST_SERVER=1 with a local server running");
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config.toml"), "[sync]\npoll_interval_secs = 3600\n").unwrap();
+    let (tx, rx) = mpsc::channel::<Value>();
+    let tx = std::sync::Mutex::new(tx);
+    let emit = Arc::new(move |json: String| {
+        let _ = tx.lock().unwrap().send(serde_json::from_str(&json).unwrap());
+    });
+    let e = Engine::open_with(dir.path(), Arc::new(MemoryStore::default()), emit).unwrap();
+
+    call(
+        &e,
+        "accounts.add",
+        json!({
+            "provider": "custom", "email": "idle@example.com", "name": "Test", "username": "idle",
+            "password": "secret", "imap_host": "localhost", "imap_port": 3143, "imap_security": "plain",
+            "smtp_host": "localhost", "smtp_port": 3025, "smtp_security": "plain",
+        }),
+    );
+    let account_id = wait_event(&rx, "account_added")["account_id"].as_i64().unwrap();
+    wait_event(&rx, "sync_finished");
+    let inbox_total = || folder(&e, account_id, "inbox").map(|f| f["total"].as_i64().unwrap()).unwrap_or(-1);
+    let before = inbox_total();
+    // Let the watcher connect and enter IDLE.
+    std::thread::sleep(Duration::from_secs(2));
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let deliver = |n: usize| {
+        rt.block_on(async {
+            let mut s = imap::connect(&test_account("idle"), &Credential::Password("secret".into()), Duration::from_secs(20))
+                .await
+                .unwrap();
+            let raw = format!(
+                "From: Someone <someone@example.com>\r\nTo: idle@example.com\r\nSubject: Pushed {n}\r\n\
+                 Message-ID: <pushed-{n}-{}@example.com>\r\nDate: Mon, 23 Nov 2026 10:00:00 +0000\r\n\r\nHello.\r\n",
+                std::process::id()
+            );
+            s.append("INBOX", None, None, raw.as_bytes()).await.unwrap();
+            s.logout().await.unwrap();
+        })
+    };
+
+    for n in 1..=2 {
+        let sent = Instant::now();
+        deliver(n);
+        let want = before + n as i64;
+        wait_until("mail pushed by IDLE", || (inbox_total() == want).then_some(()));
+        eprintln!("message {n} arrived {:?} after it was delivered", sent.elapsed());
+        assert!(sent.elapsed() < Duration::from_secs(10));
+    }
+
+    call(&e, "accounts.remove", json!({ "id": account_id }));
 }

@@ -23,6 +23,42 @@ use tokio::sync::{Mutex as AsyncMutex, Notify, OwnedMutexGuard};
 
 pub type Emit = Arc<dyn Fn(String) + Send + Sync>;
 
+/// Messages with a local change (flag or move) not yet pushed to the server,
+/// by `(folder_id, uid)`. Sync leaves these alone, so a pass that read the
+/// server just before the push doesn't undo what the user did. Mostly matters
+/// with IDLE, which syncs the inbox the moment anything there changes.
+#[derive(Default, Clone)]
+pub struct Pending(Arc<Mutex<HashMap<(i64, u32), usize>>>);
+
+/// Marks a message as pending until dropped.
+pub struct PendingGuard {
+    pending: Pending,
+    key: (i64, u32),
+}
+
+impl Pending {
+    pub fn hold(&self, folder_id: i64, uid: u32) -> PendingGuard {
+        *self.0.lock().unwrap().entry((folder_id, uid)).or_default() += 1;
+        PendingGuard { pending: self.clone(), key: (folder_id, uid) }
+    }
+
+    fn uids(&self, folder_id: i64) -> HashSet<u32> {
+        self.0.lock().unwrap().keys().filter(|(f, _)| *f == folder_id).map(|(_, u)| *u).collect()
+    }
+}
+
+impl Drop for PendingGuard {
+    fn drop(&mut self) {
+        let mut map = self.pending.0.lock().unwrap();
+        if let Some(n) = map.get_mut(&self.key) {
+            *n -= 1;
+            if *n == 0 {
+                map.remove(&self.key);
+            }
+        }
+    }
+}
+
 pub struct Conn {
     session: Option<Session>,
     last_used: Instant,
@@ -59,6 +95,12 @@ pub struct Inner {
     conns: Mutex<HashMap<i64, Arc<AsyncMutex<Conn>>>>,
     tokens: Mutex<HashMap<i64, Tokens>>,
     syncing: Mutex<HashSet<i64>>,
+    pub pending: Pending,
+    /// One lock per folder, so an IDLE-triggered inbox sync and a full pass
+    /// never work on the same folder at once.
+    folder_locks: Mutex<HashMap<i64, Arc<AsyncMutex<()>>>>,
+    /// The IDLE watcher task of each account.
+    idlers: Mutex<HashMap<i64, tokio::task::JoinHandle<()>>>,
     pub wake: Notify,
 }
 
@@ -72,6 +114,9 @@ impl Inner {
             conns: Mutex::new(HashMap::new()),
             tokens: Mutex::new(HashMap::new()),
             syncing: Mutex::new(HashSet::new()),
+            pending: Pending::default(),
+            folder_locks: Mutex::new(HashMap::new()),
+            idlers: Mutex::new(HashMap::new()),
             wake: Notify::new(),
         }
     }
@@ -185,6 +230,9 @@ impl Inner {
     pub fn forget_account(&self, account_id: i64) {
         self.conns.lock().unwrap().remove(&account_id);
         self.tokens.lock().unwrap().remove(&account_id);
+        if let Some(task) = self.idlers.lock().unwrap().remove(&account_id) {
+            task.abort();
+        }
     }
 
     // ---- sync -----------------------------------------------------------
@@ -236,6 +284,8 @@ impl Inner {
     }
 
     async fn sync_folder(&self, acc: &Account, folder: &Folder, thorough: bool) -> Result<bool> {
+        let lock = self.folder_locks.lock().unwrap().entry(folder.id).or_default().clone();
+        let _held = lock.lock().await;
         let store = &self.store;
         let cfg = self.config.get();
         let mut changed = false;
@@ -256,7 +306,7 @@ impl Inner {
         let max = store.max_uid(folder.id)?;
         if sel.exists == 0 {
             if max > 0 {
-                changed |= store.reconcile(folder.id, 1, u32::MAX, &[])?;
+                changed |= store.reconcile(folder.id, 1, u32::MAX, &[], &self.pending.uids(folder.id))?;
             }
             store.set_backfill_uid(folder.id, 1)?;
         } else {
@@ -269,7 +319,9 @@ impl Inner {
                 1
             };
             let fresh = step!(conn, |s| imap::fetch_headers(s, &format!("{lo}:*")).await)?;
-            let fresh: Vec<_> = fresh.into_iter().filter(|m| m.uid >= lo).collect();
+            // A message moved away locally but not yet on the server isn't new mail.
+            let in_flight = self.pending.uids(folder.id);
+            let fresh: Vec<_> = fresh.into_iter().filter(|m| m.uid >= lo && !in_flight.contains(&m.uid)).collect();
             changed |= store.insert_messages(acc.id, folder.id, &fresh)? > 0;
             if max == 0 {
                 store.set_backfill_uid(folder.id, lo)?;
@@ -280,7 +332,9 @@ impl Inner {
                 let floor = store.min_uid(folder.id)?;
                 let from = if thorough { floor } else { floor.max(max.saturating_sub(cfg.sync.reconcile_window)) };
                 let flags = step!(conn, |s| imap::fetch_flags(s, from, max).await)?;
-                changed |= store.reconcile(folder.id, from, max, &flags)?;
+                // Checked now, not before the fetch: pushes need this connection,
+                // which is still held, so none can have finished in between.
+                changed |= store.reconcile(folder.id, from, max, &flags, &self.pending.uids(folder.id))?;
             }
 
             // Older history, one chunk per pass.
@@ -288,7 +342,9 @@ impl Inner {
             if cursor > 1 {
                 let lo = cursor.saturating_sub(cfg.sync.backfill_chunk).max(1);
                 let older = step!(conn, |s| imap::fetch_headers(s, &format!("{lo}:{}", cursor - 1)).await)?;
-                let older: Vec<_> = older.into_iter().filter(|m| m.uid >= lo && m.uid < cursor).collect();
+                let in_flight = self.pending.uids(folder.id);
+                let older: Vec<_> =
+                    older.into_iter().filter(|m| m.uid >= lo && m.uid < cursor && !in_flight.contains(&m.uid)).collect();
                 changed |= store.insert_messages(acc.id, folder.id, &older)? > 0;
                 store.set_backfill_uid(folder.id, lo)?;
                 pending = lo > 1;
@@ -322,6 +378,112 @@ impl Inner {
             }
         }
         Ok(pending)
+    }
+
+    /// Syncs only the account's inbox: what IDLE asks for when the server
+    /// announces a change there.
+    pub async fn sync_inbox(&self, account_id: i64) -> Result<()> {
+        let acc = self.store.account(account_id)?.ok_or_else(|| anyhow!("account was removed"))?;
+        let Some(inbox) = self.store.folders(acc.id)?.into_iter().find(|f| f.role == "inbox") else { return Ok(()) };
+        self.sync_folder(&acc, &inbox, false).await.map(|_| ())
+    }
+
+    // ---- IDLE -------------------------------------------------------------
+
+    /// Starts an IDLE watcher for every account that lacks one, and stops
+    /// those of accounts that are gone or whose watcher has ended.
+    fn ensure_idlers(self: &Arc<Self>, accounts: &[Account]) {
+        let mut idlers = self.idlers.lock().unwrap();
+        idlers.retain(|id, task| {
+            let keep = !task.is_finished() && accounts.iter().any(|a| a.id == *id);
+            if !keep {
+                task.abort();
+            }
+            keep
+        });
+        for acc in accounts {
+            if !idlers.contains_key(&acc.id) {
+                let inner = self.clone();
+                let id = acc.id;
+                idlers.insert(id, tokio::spawn(async move { inner.idle_loop(id).await }));
+            }
+        }
+    }
+
+    /// Keeps an IDLE connection open on the account's inbox, reconnecting with
+    /// a growing delay after failures. Ends if the server has no IDLE (the poll
+    /// covers that) or the account is removed. While `sync.idle` is off it
+    /// only waits, checking the setting again each minute.
+    async fn idle_loop(self: Arc<Self>, account_id: i64) {
+        let mut backoff = Duration::from_secs(15);
+        loop {
+            if !self.config.get().sync.idle {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                continue;
+            }
+            let started = Instant::now();
+            match self.idle_session(account_id).await {
+                Ok(IdleEnd::Stop) => return,
+                Ok(IdleEnd::Retry) => {}
+                Err(e) => log::info!("IDLE for account {account_id}: {e:#}"),
+            }
+            // A session that lasted a while was healthy; start the delay over.
+            if started.elapsed() > Duration::from_secs(300) {
+                backoff = Duration::from_secs(15);
+            }
+            tokio::time::sleep(backoff).await;
+            backoff = (backoff * 2).min(Duration::from_secs(900));
+        }
+    }
+
+    /// One IDLE connection, from connecting until it fails or has to restart.
+    async fn idle_session(&self, account_id: i64) -> Result<IdleEnd> {
+        use async_imap::extensions::idle::IdleResponse;
+
+        let Some(acc) = self.store.account(account_id)? else { return Ok(IdleEnd::Stop) };
+        // The first full pass lists the folders; until then there's nothing to watch.
+        let Some(inbox) = self.store.folders(acc.id)?.into_iter().find(|f| f.role == "inbox") else {
+            return Ok(IdleEnd::Retry);
+        };
+        let cfg = self.config.get();
+        let step = Duration::from_secs(cfg.sync.step_timeout_secs);
+        let restart = Duration::from_secs(cfg.sync.idle_restart_secs);
+        let timed = |what: &'static str| move |_| anyhow!("the mail server stopped responding ({what})");
+
+        let cred = self.credential(&acc).await?;
+        let mut session = imap::connect(&acc, &cred, Duration::from_secs(cfg.network.imap_connect_timeout_secs)).await?;
+        if !tokio::time::timeout(step, imap::supports_idle(&mut session)).await.map_err(timed("capabilities"))?? {
+            log::info!("{} does not support IDLE; new mail is found by polling", acc.imap_host);
+            let _ = session.logout().await;
+            return Ok(IdleEnd::Stop);
+        }
+        tokio::time::timeout(step, imap::select(&mut session, &inbox.path)).await.map_err(timed("select"))??;
+        // Anything already announced is old news: the inbox was just synced or is about to be.
+        while session.unsolicited_responses.try_recv().is_ok() {}
+
+        loop {
+            if !self.config.get().sync.idle {
+                let _ = session.logout().await;
+                return Ok(IdleEnd::Retry);
+            }
+            let mut handle = session.idle();
+            tokio::time::timeout(step, handle.init()).await.map_err(timed("IDLE"))??;
+            let (wait, _stop) = handle.wait_with_timeout(restart);
+            let response = wait.await?;
+            session = tokio::time::timeout(step, handle.done()).await.map_err(timed("DONE"))??;
+
+            // Changes reported while IDLE was being started land in the
+            // session's side channel rather than in `response`.
+            let mut changed = matches!(response, IdleResponse::NewData(_));
+            while session.unsolicited_responses.try_recv().is_ok() {
+                changed = true;
+            }
+            if changed {
+                if let Err(e) = self.sync_inbox(acc.id).await {
+                    self.emit_error(Some(acc.id), &e.context(format!("syncing {}", inbox.name)));
+                }
+            }
+        }
     }
 
     fn save_body(&self, message_id: i64, raw: &[u8]) -> Result<()> {
@@ -396,6 +558,7 @@ impl Inner {
         }
         if let Some(id) = draft.reply_to_id {
             if let Ok((acc, folder, uid)) = self.locate(id) {
+                let _held = self.pending.hold(folder.id, uid);
                 self.store.set_answered(id)?;
                 self.emit(json!({ "type": "messages_changed", "account_id": acc.id, "folder_id": folder.id }));
                 let _ = self.push_flag(acc, folder, uid, "\\Answered", true).await;
@@ -456,22 +619,34 @@ impl Inner {
     }
 }
 
+enum IdleEnd {
+    /// Don't try again: no IDLE on this server, or the account is gone.
+    Stop,
+    /// Reconnect after a pause.
+    Retry,
+}
+
 /// Background loop: sync every account now, then on a timer or when woken.
+/// Each account also gets an IDLE watcher that syncs its inbox as soon as the
+/// server reports a change, so the timer mostly matters for other folders.
 pub async fn run(inner: Arc<Inner>) {
     let mut first = true;
     loop {
         let accounts = inner.store.accounts().unwrap_or_default();
         let mut tasks = Vec::new();
-        for acc in accounts {
+        for acc in &accounts {
             let inner = inner.clone();
             let thorough = first;
-            tasks.push(tokio::spawn(async move { inner.sync_account(acc.id, thorough).await.unwrap_or(false) }));
+            let id = acc.id;
+            tasks.push(tokio::spawn(async move { inner.sync_account(id, thorough).await.unwrap_or(false) }));
         }
         let mut more = false;
         for t in tasks {
             more |= t.await.unwrap_or(false);
         }
         first = false;
+        // After the pass, so a new account's folders (and inbox) are known.
+        inner.ensure_idlers(&accounts);
 
         let wait = if more { Duration::from_secs(1) } else { Duration::from_secs(inner.config.get().sync.poll_interval_secs) };
         tokio::select! {

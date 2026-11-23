@@ -25,7 +25,8 @@ longer working list. Items are roughly ordered by priority within each section.
 
 ## Mail
 
-- [ ] IMAP IDLE for push, replacing the two-minute poll
+- [x] IMAP IDLE on each account's inbox (engine; tested against GreenMail, not yet a real provider). The two-minute poll still covers other folders
+- [ ] Check IDLE against Fastmail, Gmail and Outlook, and after the Mac sleeps or the iPhone app is suspended (the watcher reconnects after 15 s and backs off to 15 minutes)
 - [x] Conversation threading in the message list (engine, Linux and macOS; macOS compiles, not tried by hand)
 - [ ] Thread by subject when the headers are missing or broken (not done on purpose: it merges unrelated mail)
 - [ ] Undo and moving a conversation need a conversation-aware design
